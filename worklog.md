@@ -71,3 +71,23 @@ Work Log:
 Stage Summary:
 - Aplicação funcional e segura, verificada no browser. Pronta para o utilizador preview.
 - Aviso crítico mantido: token GitHub partilhado deve ser revogado; deploy manual pelo utilizador com token novo (README inclui passos).
+
+---
+Task ID: 7
+Agent: orchestrator (main)
+Task: README tecnico completo + push para GitHub.
+
+Work Log:
+- Escrito README.md tecnico integral (17 seções: visão, stack, arquitetura, modelo de dados, API, segurança, fluxos, config local, painel, Supabase, deploy Vercel, materiais Drive, env vars, scripts, estrutura, checklist, governança).
+- Criado SECURITY.md (política de segurança e reporte).
+- Refined .gitignore: .env* era demasiado abrangente; agora .env/.env.local/.env.production gitignored mas .env.example permitido.
+- Removido .env do tracking (git rm --cached .env) — estava tracked num commit anterior (0902edc). Marcado para o utilizador: histórico antigo contém o .env; idealmente squash/force-push limpo OU rotação de todos os segredos após deploy (SESSION_SECRET, ADMIN_PASSWORD_HASH) — feito via .env local que NÃO vai para Vercel, e o seed regenera config a partir do .env novo em produção.
+- Commit 06da7b9: 5 files changed (delete .env, add .env.example + SECURITY.md + README.md + .gitignore).
+- Push para https://github.com/Job-Brasil/micaela-don.git branch main (novo branch) — sucesso.
+- Verificação via GitHub API: árvore completa de src/ presente; .env, custom.db, private-assets/, dev.log, skills/ NÃO presentes no remoto.
+- Remote URL reposta sem token (git config limpo, 0 ocorrências de ghp_).
+
+Stage Summary:
+- Repo https://github.com/Job-Brasil/micaela-don atualizado com código + README técnico + SECURITY.md.
+- Token GitHub usado apenas para o push (com consentimento do utilizador); removido do .git/config.
+- Utilizador deve: (a) revogar o token após deploy; (b) rotação de SESSION_SECRET/ADMIN_PASSWORD_HASH em produção; (c) aplicar supabase/schema.sql + rls.sql; (d) fornecer URLs individuais dos materiais do Drive via painel admin.
