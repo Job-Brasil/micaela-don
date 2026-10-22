@@ -1,0 +1,165 @@
+// Prisma schema — "Um Gesto de Apoio (Micaela)"
+// SQLite does not support enums; status/type fields are String validated server-side (zod).
+// This model is mirrored 1:1 in supabase/schema.sql + supabase/rls.sql for future RLS.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Editable public text blocks (hero, story, etc.). Admin-managed.
+model SiteSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+/// EUR bank transfer configuration. NEVER published until verified + approved by admin.
+model PaymentConfig {
+  id           String    @id @default(cuid())
+  currency     String    @default("EUR")
+  holder       String    // Titular
+  bank         String    // Banco
+  iban         String    // IBAN
+  bic          String?   // BIC/SWIFT
+  method       String    @default("SEPA transfer")
+  /// Admin must explicitly publish. Public API returns this only when published && approved.
+  published    Boolean   @default(false)
+  /// Admin must explicitly verify & approve after reviewing real bank data.
+  approved     Boolean   @default(false)
+  approvedById String?
+  approvedAt   DateTime?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+/// PIX (BRL) configuration. QR image is private until approved + published.
+model PixConfig {
+  id             String   @id @default(cuid())
+  /// Base64-encoded QR image data, stored server-side only.
+  /// NEVER served publicly unless approved && published.
+  qrImageData    String?
+  qrImageMime    String?
+  beneficiaryName String?
+  /// Set true only after admin confirms the QR is legible and matches the recipient.
+  approved       Boolean  @default(false)
+  approvedById   String?
+  approvedAt     DateTime?
+  /// Set true to expose the QR on the public page.
+  published      Boolean  @default(false)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/// A donation INTENT. Submitting the form is NOT proof of payment.
+/// Confirmation is administrative or via a validated payment integration.
+model DonationIntent {
+  id          String   @id @default(cuid())
+  currency    String   // "EUR" | "BRL"
+  amount      Float?
+  donorName   String?
+  donorEmail  String?
+  message     String?
+  /// received | under_review | confirmed | rejected
+  status      String   @default("received")
+  confirmed   Boolean  @default(false)
+  confirmedAt DateTime?
+  confirmedById String?
+  ip          String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Campaign material catalog. Only approved && published appear on the public page.
+model CampaignMaterial {
+  id           String   @id @default(cuid())
+  name         String
+  /// foto | video | documento | logo | audio | outro
+  category     String
+  type         String   // mime or extension
+  url          String
+  source       String   @default("google_drive") // google_drive | upload
+  published    Boolean  @default(false)
+  approved     Boolean  @default(false)
+  approvedById String?
+  approvedAt   DateTime?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Editable thank-you message templates per channel.
+model ThankYouTemplate {
+  id        String   @id @default(cuid())
+  /// whatsapp | email
+  channel   String
+  language  String   @default("pt")
+  subject   String?
+  body      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Contact channels. WhatsApp is DISABLED by default and never shown unless enabled+published.
+model ContactChannel {
+  id        String   @id @default(cuid())
+  /// whatsapp | email
+  type      String
+  label     String
+  value     String   // private link/phone; never exposed unless enabled && published
+  enabled   Boolean  @default(false)
+  published Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Explicit, recorded consent per channel. No outbound message without a valid consent.
+model ConsentRecord {
+  id         String   @id @default(cuid())
+  donorEmail String?
+  donorName  String?
+  /// whatsapp | email
+  channel    String
+  consent    Boolean
+  ip         String?
+  createdAt  DateTime @default(now())
+}
+
+/// Outbound thank-you messages (future WhatsApp Business / email integration).
+/// Built now to track status, attempts, errors, cancellation, and prevent duplicates.
+model OutboundMessage {
+  id                String   @id @default(cuid())
+  toAddress         String
+  /// whatsapp | email
+  channel           String
+  templateId        String?
+  /// pending | queued | sent | failed | cancelled
+  status            String   @default("pending")
+  attempts          Int      @default(0)
+  lastError         String?
+  donationIntentId  String?
+  sentAt            DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([channel, toAddress, donationIntentId])
+}
+
+/// Append-only audit trail for every sensitive action.
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String   // admin email, "public", or "system"
+  action    String
+  entity    String?
+  entityId  String?
+  detail    String?
+  ip        String?
+  createdAt DateTime @default(now())
+}
