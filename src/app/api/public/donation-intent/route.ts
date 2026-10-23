@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Resilient create: if campaign_id or donor_whatsapp columns don't exist yet
-  // (pre-migration production), fall back to creating without them.
+  // (pre-migration production), fall back to raw INSERT without them.
   const intent = await db.donationIntent.create({
     data: {
       campaignId: d.campaignId,
@@ -65,23 +65,28 @@ export async function POST(req: NextRequest) {
       ip,
     },
   }).catch(async (err) => {
-    // If the error is about missing columns (P2021), retry without them
     const code = (err as { code?: string })?.code
-    if (code === 'P2021') {
-      const intent = await db.donationIntent.create({
-        data: {
-          currency: d.currency,
-          amount: d.amount ?? null,
-          donorName: d.donorName || null,
-          donorEmail: d.donorEmail || null,
-          message: [d.message, d.donorWhatsapp ? `WhatsApp: ${d.donorWhatsapp}` : null]
-            .filter(Boolean)
-            .join(' · ') || null,
-          status: 'received',
-          ip,
-        },
-      })
-      return intent
+    // P2021 = table missing, P2022 = column missing → fall back to raw INSERT
+    if (code === 'P2021' || code === 'P2022') {
+      const msg = [d.message, d.donorWhatsapp ? `WhatsApp: ${d.donorWhatsapp}` : null]
+        .filter(Boolean)
+        .join(' · ') || null
+      const rows = await db.$executeRawUnsafe(
+        `INSERT INTO donation_intent (id, currency, amount, donor_name, donor_email, message, status, ip, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'received', $6, now(), now())
+         RETURNING id`,
+        d.currency,
+        d.amount ?? null,
+        d.donorName || null,
+        d.donorEmail || null,
+        msg,
+        ip,
+      )
+      // $executeRawUnsafe returns count, not row; fetch the last inserted id
+      const last = await db.$queryRawUnsafe(
+        `SELECT id FROM donation_intent ORDER BY created_at DESC LIMIT 1`,
+      ) as Array<{ id: string }>
+      return { id: last[0]?.id ?? 'unknown', status: 'received' }
     }
     throw err
   })
@@ -99,20 +104,22 @@ export async function POST(req: NextRequest) {
           ip,
         },
       })
-    } catch {
-      // Column missing — retry without campaignId
-      try {
-        await db.consentRecord.create({
-          data: {
-            donorEmail: d.donorEmail || null,
-            donorName: d.donorName || null,
+    } catch (err) {
+      // Column missing — retry with raw INSERT (original schema columns only)
+      const code = (err as { code?: string })?.code
+      if (code === 'P2021' || code === 'P2022') {
+        try {
+          await db.$executeRawUnsafe(
+            `INSERT INTO consent_record (id, donor_email, donor_name, channel, consent, ip, created_at)
+             VALUES (gen_random_uuid()::text, $1, $2, $3, true, $4, now())`,
+            d.donorEmail || null,
+            d.donorName || null,
             channel,
-            consent: true,
             ip,
-          },
-        })
-      } catch {
-        // If still failing, skip consent recording (non-critical)
+          )
+        } catch {
+          // If still failing, skip consent recording (non-critical)
+        }
       }
     }
   }
