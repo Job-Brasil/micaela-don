@@ -71,22 +71,18 @@ export async function POST(req: NextRequest) {
       const msg = [d.message, d.donorWhatsapp ? `WhatsApp: ${d.donorWhatsapp}` : null]
         .filter(Boolean)
         .join(' · ') || null
-      const rows = await db.$executeRawUnsafe(
+      const rows = await db.$queryRawUnsafe(
         `INSERT INTO donation_intent (id, currency, amount, donor_name, donor_email, message, status, ip, created_at, updated_at)
          VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'received', $6, now(), now())
-         RETURNING id`,
+         RETURNING id, status`,
         d.currency,
         d.amount ?? null,
         d.donorName || null,
         d.donorEmail || null,
         msg,
         ip,
-      )
-      // $executeRawUnsafe returns count, not row; fetch the last inserted id
-      const last = await db.$queryRawUnsafe(
-        `SELECT id FROM donation_intent ORDER BY created_at DESC LIMIT 1`,
-      ) as Array<{ id: string }>
-      return { id: last[0]?.id ?? 'unknown', status: 'received' }
+      ) as Array<{ id: string; status: string }>
+      return rows[0] ?? { id: 'unknown', status: 'received' }
     }
     throw err
   })
