@@ -57,56 +57,93 @@ function resolveImageRef(ref: string | null | undefined): string | null {
   return ref
 }
 
+type RawRow = Record<string, unknown>
+
+/**
+ * Try Prisma query; if it fails (missing columns), fall back to raw SQL selecting
+ * only the columns that exist in the ORIGINAL (pre-migration) schema.
+ */
+async function resilientQuery<T>(
+  prismaQuery: () => Promise<T>,
+  rawFallback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await prismaQuery()
+  } catch (err) {
+    const code = (err as { code?: string })?.code
+    // P2022 = column missing, P2021 = table missing
+    if (code === 'P2022' || code === 'P2021') {
+      return await rawFallback()
+    }
+    throw err
+  }
+}
+
 /**
  * The single source of truth for what a visitor may see.
  * Returns ONLY published + approved data. Private data never leaves here.
  *
- * Resilient to schema state: if the multi-campanha / V2 migration hasn't been
- * applied to the production DB, falls back to raw SQL selecting only the
- * columns that exist in the original schema. This allows the app to work
- * immediately after deploy, before the manual SQL migration is applied.
+ * Resilient: if the multi-campanha / V2 migration hasn't been applied to the
+ * production DB, falls back to raw SQL selecting only original-schema columns.
  */
 export async function getPublicSite(_campaignId: string = 'micaela'): Promise<PublicSite> {
   try {
-    // Try the Prisma (typed) path first — works if schema is fully applied.
-    const campaign = await db.campaign.findUnique({ where: { id: _campaignId } }).catch(() => null)
-    const settings = await db.siteSetting.findMany({ where: { campaignId: _campaignId } }).catch(async () =>
-      // Fallback: unscoped (pre-migration) — campaign_id column may not exist
-      db.siteSetting.findMany().catch(() => []),
+    // Try Prisma (typed); fallback to raw SQL (original schema columns only).
+    const settings = await resilientQuery(
+      () => db.siteSetting.findMany({ where: { campaignId: _campaignId } }),
+      () => db.siteSetting.findMany().catch(async () =>
+        db.$queryRawUnsafe('SELECT key, value FROM site_setting') as Promise<RawRow[]>,
+      ),
     )
-    const payment = await db.paymentConfig
-      .findFirst({ where: { campaignId: _campaignId }, orderBy: { updatedAt: 'desc' } })
-      .catch(async () =>
-        db.paymentConfig.findFirst({ orderBy: { updatedAt: 'desc' } }).catch(() => null),
-      )
-    const pix = await db.pixConfig
-      .findFirst({ where: { campaignId: _campaignId }, orderBy: { updatedAt: 'desc' } })
-      .catch(async () =>
-        db.pixConfig.findFirst({ orderBy: { updatedAt: 'desc' } }).catch(() => null),
-      )
-    const materials = await db.campaignMaterial
-      .findMany({ where: { campaignId: _campaignId, approved: true, published: true }, orderBy: { createdAt: 'desc' } })
-      .catch(async () =>
-        db.campaignMaterial.findMany({ where: { approved: true, published: true }, orderBy: { createdAt: 'desc' } }).catch(async () => {
-          // Last resort: raw SQL selecting only columns that exist in original schema
-          return db.$queryRawUnsafe(
-            `SELECT id, name, category, type, url, source FROM campaign_material WHERE approved = true AND published = true ORDER BY created_at DESC`,
-          ) as Promise<Array<{ id: string; name: string; category: string; type: string; url: string; source: string }>>
-        }),
-      )
-    const channels = await db.contactChannel
-      .findMany({ where: { campaignId: _campaignId, enabled: true, published: true } })
-      .catch(async () =>
-        db.contactChannel.findMany({ where: { enabled: true, published: true } }).catch(() => []),
-      )
+    const payment = await resilientQuery(
+      () => db.paymentConfig.findFirst({ where: { campaignId: _campaignId }, orderBy: { updatedAt: 'desc' } }),
+      () => db.paymentConfig.findFirst({ orderBy: { updatedAt: 'desc' } }).catch(async () => {
+        const rows = await db.$queryRawUnsafe(
+          'SELECT id, currency, holder, bank, iban, bic, method, published, approved FROM payment_config ORDER BY updated_at DESC LIMIT 1',
+        ) as RawRow[]
+        return rows[0] ?? null
+      }),
+    )
+    const pix = await resilientQuery(
+      () => db.pixConfig.findFirst({ where: { campaignId: _campaignId }, orderBy: { updatedAt: 'desc' } }),
+      () => db.pixConfig.findFirst({ orderBy: { updatedAt: 'desc' } }).catch(async () => {
+        const rows = await db.$queryRawUnsafe(
+          'SELECT id, qr_image_data, qr_image_mime, beneficiary_name, approved, published FROM pix_config ORDER BY updated_at DESC LIMIT 1',
+        ) as RawRow[]
+        return rows[0] ?? null
+      }),
+    )
+    const materials = await resilientQuery(
+      () => db.campaignMaterial.findMany({ where: { campaignId: _campaignId, approved: true, published: true }, orderBy: { createdAt: 'desc' } }),
+      () => db.campaignMaterial.findMany({ where: { approved: true, published: true }, orderBy: { createdAt: 'desc' } }).catch(async () =>
+        db.$queryRawUnsafe(
+          'SELECT id, name, category, type, url, source, cover_image_ref, cover_alt, description FROM campaign_material WHERE approved = true AND published = true ORDER BY created_at DESC',
+        ) as Promise<RawRow[]>,
+      ),
+    )
+    const channels = await resilientQuery(
+      () => db.contactChannel.findMany({ where: { campaignId: _campaignId, enabled: true, published: true } }),
+      () => db.contactChannel.findMany({ where: { enabled: true, published: true } }).catch(async () =>
+        db.$queryRawUnsafe(
+          'SELECT id, type, label, value FROM contact_channel WHERE enabled = true AND published = true',
+        ) as Promise<RawRow[]>,
+      ),
+    )
 
-    const settingsMap = (settings as Array<{ key: string; value: string }>).reduce<Record<string, string>>((acc, s) => {
+    const settingsArr = (settings as RawRow[]).map((r) => ({
+      key: String(r.key ?? r.k ?? ''),
+      value: String(r.value ?? r.v ?? ''),
+    }))
+    const settingsMap = settingsArr.reduce<Record<string, string>>((acc, s) => {
       acc[s.key] = s.value
       return acc
     }, {})
 
-    const showPayment = !!payment && payment.published && payment.approved
-    const showPix = !!pix && pix.published && pix.approved && !!pix.qrImageData
+    const paymentRow = payment as RawRow | null
+    const showPayment = !!paymentRow && paymentRow.published === true && paymentRow.approved === true
+
+    const pixRow = pix as RawRow | null
+    const showPix = !!pixRow && pixRow.published === true && pixRow.approved === true && !!pixRow.qr_image_data
 
     const hero = {
       layout: settingsMap['hero.layout'] ?? 'none',
@@ -119,53 +156,42 @@ export async function getPublicSite(_campaignId: string = 'micaela'): Promise<Pu
     }
 
     return {
-      campaign: campaign
-        ? {
-            id: campaign.id,
-            slug: campaign.slug,
-            name: campaign.name,
-            currency: campaign.currency,
-            country: campaign.country,
-            seoTitle: campaign.seoTitle,
-            seoDescription: campaign.seoDescription,
-            canonicalUrl: campaign.canonicalUrl,
-          }
-        : { id: 'micaela', slug: 'micaela', name: 'A história da Micaela', currency: 'EUR', country: 'PT', seoTitle: null, seoDescription: null, canonicalUrl: null },
+      campaign: { id: 'micaela', slug: 'micaela', name: 'A história da Micaela', currency: 'EUR', country: 'PT', seoTitle: null, seoDescription: null, canonicalUrl: null },
       settings: settingsMap,
       hero,
       payment: showPayment
         ? {
-            currency: payment!.currency,
-            holder: payment!.holder,
-            bank: payment!.bank,
-            iban: payment!.iban,
-            bic: payment!.bic ?? null,
-            method: payment!.method,
+            currency: String(paymentRow!.currency ?? 'EUR'),
+            holder: String(paymentRow!.holder ?? ''),
+            bank: String(paymentRow!.bank ?? ''),
+            iban: String(paymentRow!.iban ?? ''),
+            bic: (paymentRow!.bic as string | null) ?? null,
+            method: String(paymentRow!.method ?? 'SEPA transfer'),
           }
         : null,
-      paymentStatus: payment
-        ? { approved: payment.approved, published: payment.published, exists: true }
+      paymentStatus: paymentRow
+        ? { approved: paymentRow.approved === true, published: paymentRow.published === true, exists: true }
         : { approved: false, published: false, exists: false },
       pix: {
         available: showPix,
-        beneficiaryName: showPix ? pix!.beneficiaryName ?? null : null,
+        beneficiaryName: showPix ? (pixRow!.beneficiary_name as string | null) ?? null : null,
         qrUrl: showPix ? '/api/public/pix-qr' : null,
       },
-      materials: (materials as Array<Record<string, unknown>>).map((m) => ({
+      materials: (materials as RawRow[]).map((m) => ({
         id: String(m.id),
         name: String(m.name ?? ''),
         category: String(m.category ?? ''),
         type: String(m.type ?? ''),
         url: String(m.url ?? ''),
         source: String(m.source ?? 'google_drive'),
-        coverImage: resolveImageRef((m.coverImageRef ?? m.cover_image_ref) as string | null | undefined),
-        coverAlt: ((m.coverAlt ?? m.cover_alt) as string | null) ?? null,
+        coverImage: resolveImageRef((m.cover_image_ref ?? null) as string | null),
+        coverAlt: (m.cover_alt as string | null) ?? null,
         description: (m.description as string | null) ?? null,
       })),
-      contactChannels: (channels as Array<{ type: string; label: string; value: string }>).map((c) => ({
-        type: c.type,
-        label: c.label,
-        value: c.value,
+      contactChannels: (channels as RawRow[]).map((c) => ({
+        type: String(c.type ?? ''),
+        label: String(c.label ?? ''),
+        value: String(c.value ?? ''),
       })),
     }
   } catch (err) {
@@ -194,15 +220,7 @@ export async function getCampaignIdBySlug(slug: string): Promise<string | null> 
 const EMPTY_PUBLIC_SITE: PublicSite = {
   campaign: null,
   settings: {},
-  hero: {
-    layout: 'none',
-    bannerImage: null,
-    bannerAlt: null,
-    portraitImage: null,
-    portraitAlt: null,
-    storyImage: null,
-    storyAlt: null,
-  },
+  hero: { layout: 'none', bannerImage: null, bannerAlt: null, portraitImage: null, portraitAlt: null, storyImage: null, storyAlt: null },
   payment: null,
   paymentStatus: { approved: false, published: false, exists: false },
   pix: { available: false, beneficiaryName: null, qrUrl: null },
