@@ -157,3 +157,11 @@ begin
     execute format('create trigger trg_%I_touch before update on %I for each row execute function touch_updated_at();', t, t);
   end loop;
 end $$;
+
+-- Indexes mirroring @@index directives in prisma/schema.prisma
+create index if not exists idx_donation_intent_created_at on donation_intent (created_at);
+create index if not exists idx_donation_intent_status      on donation_intent (status);
+create index if not exists idx_campaign_material_appr_pub on campaign_material (approved, published);
+create index if not exists idx_consent_record_channel_email on consent_record (channel, donor_email);
+create index if not exists idx_outbound_message_status     on outbound_message (status);
+create index if not exists idx_audit_log_created_at       on audit_log (created_at);

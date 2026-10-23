@@ -304,11 +304,41 @@ Separadores:
 
 ## 10. Supabase (produção)
 
-O sandbox corre Prisma + SQLite com enforcement server-side. Para usar Supabase:
+A aplicação usa **Prisma** como camada de acesso à base de dados. Em produção, a base de
+dados é **PostgreSQL no Supabase**. O enforcement de segurança principal está no servidor
+Next.js (gating em `getPublicSite()` e `requireAdmin()`); as políticas RLS do Supabase são
+uma camada de defesa adicional contra acesso direto à REST API do Supabase via anon key.
 
-1. Crie o projeto em supabase.co.
-2. No SQL Editor, execute **primeiro** `supabase/schema.sql` e **depois** `supabase/rls.sql`.
-3. Defina as variáveis de ambiente na Vercel (ver §13).
+> **Nota importante sobre a arquitetura:** a aplicação NÃO usa o cliente JavaScript do
+> Supabase (`@supabase/supabase-js`) para leitura/escrita. Usa o **Prisma** com a
+> connection string PostgreSQL. Por isso, o `SUPABASE_SERVICE_ROLE_KEY` não é usado pelo
+> código atualmente (fica reservado para uma futura migração para `supabase-js`); o acesso
+> à base de dados é feito via `DATABASE_URL` + Prisma, que bypassa RLS (daí o enforcement
+> server-side ser crítico).
+
+### Passos manuais no Supabase
+
+1. Crie o projeto em supabase.co (região próxima dos utilizadores).
+2. No **SQL Editor**, execute **por esta ordem**:
+   1. `supabase/schema.sql` — cria as tabelas, triggers e índices.
+   2. `supabase/rls.sql` — ativa RLS e cria as políticas.
+3. Em **Project Settings → Database**, obtenha as connection strings:
+   - **Connection pooling (porta 6543)** — use como `DATABASE_URL` na Vercel.
+     Formato: `postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`
+   - **Direct connection (porta 5432)** — use como `DIRECT_DATABASE_URL` na Vercel.
+     Formato: `postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres`
+4. Em **Project Settings → API**, obtenha:
+   - `NEXT_PUBLIC_SUPABASE_URL` = Project URL.
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = anon/publishable key (segura para o browser).
+   - `SUPABASE_SERVICE_ROLE_KEY` = service_role key (**server-only**, não expor).
+
+### Porquê `?pgbouncer=true&connection_limit=1`?
+
+O endpoint pooled do Supabase (porta 6543) usa **PgBouncer em modo transação**, que não
+suporta prepared statements persistentes. O Prisma precisa destes parâmetros para funcionar
+corretamente nesse modo. Sem eles, obtém-se erros de "prepared statement" em serverless.
+O `DIRECT_DATABASE_URL` (porta 5432, sem pooler) é usado apenas para migrações/seed, onde
+os prepared statements são necessários.
 
 **Políticas RLS resumidas:**
 
@@ -364,45 +394,74 @@ Inserir manualmente os URLs individuais dos ficheiros aprovados. Só os marcados
 
 ## 13. Variáveis de ambiente
 
-Defina em `.env` (local) e em **Vercel → Settings → Environment Variables** (produção):
+Defina em `.env` (local) e em **Vercel → Settings → Environment Variables** (produção).
+Veja `.env.example` para o template completo (sem segredos).
+
+### Produção (Vercel) — obrigatórias
 
 | Variável | Âmbito | Descrição |
 |---|---|---|
-| `DATABASE_URL` | server | URL Prisma (SQLite local / Supabase em prod) |
-| `NEXT_PUBLIC_SUPABASE_URL` | client | URL do projeto Supabase |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client | Chave publishable (segura para o browser) |
-| `SUPABASE_SERVICE_ROLE_KEY` | **server only** | Chave de serviço (bypass RLS); nunca no frontend |
-| `ADMIN_EMAIL` | server | Email do admin autorizado |
-| `ADMIN_PASSWORD_HASH` | server | `scrypt:<saltHex>:<hashHex>` (ver §14) |
-| `SESSION_SECRET` | server | Segredo HMAC (≥32 chars) |
-| `PRIVATE_ASSETS_DIR` | server | Pasta de ativos privados (opcional) |
-| `INIT_PAYMENT_*` | server | Config EUR inicial (lida uma vez pelo seed) |
-| `INIT_WHATSAPP_*` | server | Contacto WhatsApp inicial (desativado) |
+| `DATABASE_URL` | **server** | Connection string PostgreSQL (porta 6543) com `?pgbouncer=true&connection_limit=1` |
+| `DIRECT_DATABASE_URL` | **server** | Connection string PostgreSQL direta (porta 5432, sem pooler) para migrações/seed |
+| `NEXT_PUBLIC_SUPABASE_URL` | client | URL do projeto Supabase (`https://[ref].supabase.co`) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client | Chave publishable/anon (segura para o browser) |
+| `SUPABASE_SERVICE_ROLE_KEY` | **server only** | Chave de serviço (reservada; bypass RLS); nunca no frontend |
+| `ADMIN_EMAIL` | **server** | Email do admin autorizado |
+| `ADMIN_PASSWORD_HASH` | **server** | `scrypt:<saltHex>:<hashHex>` (ver §14) — **regenerar em produção** |
+| `SESSION_SECRET` | **server** | Segredo HMAC (≥32 chars) — **regenerar em produção** |
 
-Ver `.env.example` para o template completo (sem segredos).
+### Produção (Vercel) — opcionais
+
+| Variável | Âmbito | Descrição |
+|---|---|---|
+| `INIT_PAYMENT_*` | server | Config EUR inicial (lida uma vez pelo seed, só se a row não existir) |
+| `INIT_WHATSAPP_*` | server | Contacto WhatsApp inicial (desativado por defeito) |
+| `PRIVATE_ASSETS_DIR` | server | Pasta de ativos privados (não usado em serverless) |
+
+### Desenvolvimento local (sandbox / SQLite)
+
+| Variável | Âmbito | Descrição |
+|---|---|---|
+| `DATABASE_URL` | server | `file:/home/z/my-project/db/custom.db` (SQLite) |
+
+Em dev local **não** é necessário definir `DIRECT_DATABASE_URL` nem as chaves do Supabase
+(a app corre com Prisma + SQLite). As variáveis `INIT_*` são lidas pelo `bun run seed:dev`.
+
+> **Separador de ambientes:** o schema de produção (`prisma/schema.prisma`) usa
+> `provider = "postgresql"`; o de dev (`prisma/schema.dev.prisma`) usa `provider = "sqlite"`.
+> O script `postinstall` (e o `build`) escolhe automaticamente o schema correto conforme
+> o esquema de `DATABASE_URL` (`file:` → SQLite; `postgres` → PostgreSQL). Isto evita a
+> incompatibilidade de provider que causava o erro de produção.
 
 ---
 
 ## 14. Scripts de utilidade
 
-| Script | Comando | Output |
+| Script | Comando | Descrição |
 |---|---|---|
 | Hash de password | `bun run scripts/hash-password.ts "<password>"` | `scrypt:<salt>:<hash>` → `ADMIN_PASSWORD_HASH` |
 | Segredo de sessão | `bun run scripts/gen-session-secret.ts` | string aleatória → `SESSION_SECRET` |
-| Seed inicial | `bun run scripts/seed.ts` | Carrega config de `.env` como rascunho |
+| Seed — dev (SQLite) | `bun run seed:dev` | Carrega config de `.env` como rascunho (idempotente) |
+| Seed — produção (Postgres) | `bun run seed` | Carrega config como rascunho (requer `DATABASE_URL` postgres) |
+| Gerar client — dev | `bun run db:generate:dev` | Gera `@prisma/client` para SQLite (`schema.dev.prisma`) |
+| Gerar client — prod | `bun run db:generate` | Gera `@prisma/client` para PostgreSQL (`schema.prisma`) |
+| Push schema — dev | `bun run db:push:dev` | Sincroniza SQLite local com `schema.dev.prisma` |
+| Push schema — prod | `bun run db:push` | Sincroniza PostgreSQL (usar com cuidado em produção) |
 
 ---
 
 ## 15. Estrutura de pastas
 
 ```
-prisma/schema.prisma             modelo de dados
+prisma/schema.prisma             schema PRODUÇÃO (PostgreSQL)
+prisma/schema.dev.prisma         schema DEV (SQLite, sandbox apenas)
 supabase/schema.sql              DDL (espelho do Prisma para Postgres)
 supabase/rls.sql                 políticas Row Level Security
+scripts/postinstall.ts           wrapper que escolhe o schema conforme DATABASE_URL
 scripts/hash-password.ts         gerar ADMIN_PASSWORD_HASH
 scripts/gen-session-secret.ts    gerar SESSION_SECRET
-scripts/seed.ts                  seed idempotente (rascunho)
-src/lib/db.ts                    cliente Prisma
+scripts/seed.ts                  seed idempotente (rascunho) com guarda de ambiente
+src/lib/db.ts                    cliente Prisma (lazy init, logs por ambiente)
 src/lib/auth.ts                  sessão HMAC + scrypt + requireAdmin
 src/lib/audit.ts                 registo de auditoria
 src/lib/api.ts                   helpers de resposta JSON
@@ -414,6 +473,8 @@ src/app/api/public/*             endpoints públicos (gating de publicação)
 src/app/api/admin/*              endpoints admin (gating de sessão)
 src/components/public-site.tsx   página pública
 src/components/admin-app.tsx     painel admin (overlay)
+next.config.ts                   config Next (serverExternalPackages, sem standalone)
+tsconfig.json                    config TS (exclui examples/skills/etc.)
 README.md                        este documento
 SECURITY.md                      política de segurança
 .env.example                     template de variáveis (sem segredos)

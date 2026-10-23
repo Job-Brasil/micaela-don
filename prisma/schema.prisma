@@ -1,14 +1,23 @@
 // Prisma schema — "Um Gesto de Apoio (Micaela)"
-// SQLite does not support enums; status/type fields are String validated server-side (zod).
-// This model is mirrored 1:1 in supabase/schema.sql + supabase/rls.sql for future RLS.
+// PRODUCTION schema: PostgreSQL (used by Vercel + Supabase).
+// For local development with SQLite, see prisma/schema.dev.prisma and the
+// db:*:dev scripts in package.json. The two schemas must be kept in sync.
+//
+// This model is mirrored 1:1 in supabase/schema.sql + supabase/rls.sql.
+// Status/type fields are String (not enums) validated server-side with zod.
 
 generator client {
   provider = "prisma-client-js"
+  // Output is the default location; Vercel's postinstall runs `prisma generate`.
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Supabase uses PgBouncer in transaction mode on port 6543.
+  // The DATABASE_URL must include: ?pgbouncer=true&connection_limit=1
+  // directUrl is the direct (non-pooled) connection on port 5432, used by migrations.
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 /// Editable public text blocks (hero, story, etc.). Admin-managed.
@@ -22,10 +31,10 @@ model SiteSetting {
 model PaymentConfig {
   id           String    @id @default(cuid())
   currency     String    @default("EUR")
-  holder       String    // Titular
-  bank         String    // Banco
-  iban         String    // IBAN
-  bic          String?   // BIC/SWIFT
+  holder       String
+  bank         String
+  iban         String
+  bic          String?
   method       String    @default("SEPA transfer")
   /// Admin must explicitly publish. Public API returns this only when published && approved.
   published    Boolean   @default(false)
@@ -40,40 +49,43 @@ model PaymentConfig {
 
 /// PIX (BRL) configuration. QR image is private until approved + published.
 model PixConfig {
-  id             String   @id @default(cuid())
+  id              String   @id @default(cuid())
   /// Base64-encoded QR image data, stored server-side only.
   /// NEVER served publicly unless approved && published.
-  qrImageData    String?
-  qrImageMime    String?
+  qrImageData     String?
+  qrImageMime     String?
   beneficiaryName String?
   /// Set true only after admin confirms the QR is legible and matches the recipient.
-  approved       Boolean  @default(false)
-  approvedById   String?
-  approvedAt     DateTime?
+  approved        Boolean  @default(false)
+  approvedById    String?
+  approvedAt      DateTime?
   /// Set true to expose the QR on the public page.
-  published      Boolean  @default(false)
-  notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  published       Boolean  @default(false)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 /// A donation INTENT. Submitting the form is NOT proof of payment.
 /// Confirmation is administrative or via a validated payment integration.
 model DonationIntent {
-  id          String   @id @default(cuid())
-  currency    String   // "EUR" | "BRL"
-  amount      Float?
-  donorName   String?
-  donorEmail  String?
-  message     String?
+  id            String   @id @default(cuid())
+  currency      String
+  amount        Float?
+  donorName     String?
+  donorEmail    String?
+  message       String?
   /// received | under_review | confirmed | rejected
-  status      String   @default("received")
-  confirmed   Boolean  @default(false)
-  confirmedAt DateTime?
+  status        String   @default("received")
+  confirmed     Boolean  @default(false)
+  confirmedAt   DateTime?
   confirmedById String?
-  ip          String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  ip            String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([status])
 }
 
 /// Campaign material catalog. Only approved && published appear on the public page.
@@ -82,16 +94,18 @@ model CampaignMaterial {
   name         String
   /// foto | video | documento | logo | audio | outro
   category     String
-  type         String   // mime or extension
+  type         String
   url          String
-  source       String   @default("google_drive") // google_drive | upload
+  source       String   @default("google_drive")
   published    Boolean  @default(false)
   approved     Boolean  @default(false)
   approvedById String?
   approvedAt   DateTime?
   notes        String?
   createdAt    DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt    DateTime @updatedAt
+
+  @@index([approved, published])
 }
 
 /// Editable thank-you message templates per channel.
@@ -113,7 +127,7 @@ model ContactChannel {
   /// whatsapp | email
   type      String
   label     String
-  value     String   // private link/phone; never exposed unless enabled && published
+  value     String
   enabled   Boolean  @default(false)
   published Boolean  @default(false)
   createdAt DateTime @default(now())
@@ -130,6 +144,8 @@ model ConsentRecord {
   consent    Boolean
   ip         String?
   createdAt  DateTime @default(now())
+
+  @@index([channel, donorEmail])
 }
 
 /// Outbound thank-you messages (future WhatsApp Business / email integration).
@@ -150,16 +166,19 @@ model OutboundMessage {
   updatedAt         DateTime @updatedAt
 
   @@unique([channel, toAddress, donationIntentId])
+  @@index([status])
 }
 
 /// Append-only audit trail for every sensitive action.
 model AuditLog {
   id        String   @id @default(cuid())
-  actor     String   // admin email, "public", or "system"
+  actor     String
   action    String
   entity    String?
   entityId  String?
   detail    String?
   ip        String?
   createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }

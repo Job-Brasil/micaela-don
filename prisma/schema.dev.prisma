@@ -1,0 +1,144 @@
+// Prisma schema — LOCAL DEVELOPMENT ONLY (SQLite)
+// This file is used exclusively by the db:*:dev scripts so the sandbox can run
+// without a local PostgreSQL instance. It must stay in sync with prisma/schema.prisma.
+//
+// PRODUCTION uses prisma/schema.prisma (PostgreSQL). Never deploy with this file.
+// The model definitions are intentionally identical; only the datasource differs.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Editable public text blocks (hero, story, etc.). Admin-managed.
+model SiteSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model PaymentConfig {
+  id           String    @id @default(cuid())
+  currency     String    @default("EUR")
+  holder       String
+  bank         String
+  iban         String
+  bic          String?
+  method       String    @default("SEPA transfer")
+  published    Boolean   @default(false)
+  approved     Boolean   @default(false)
+  approvedById String?
+  approvedAt   DateTime?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model PixConfig {
+  id              String   @id @default(cuid())
+  qrImageData     String?
+  qrImageMime     String?
+  beneficiaryName String?
+  approved        Boolean  @default(false)
+  approvedById    String?
+  approvedAt      DateTime?
+  published       Boolean  @default(false)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model DonationIntent {
+  id            String   @id @default(cuid())
+  currency      String
+  amount        Float?
+  donorName     String?
+  donorEmail    String?
+  message       String?
+  status        String   @default("received")
+  confirmed     Boolean  @default(false)
+  confirmedAt   DateTime?
+  confirmedById String?
+  ip            String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model CampaignMaterial {
+  id           String   @id @default(cuid())
+  name         String
+  category     String
+  type         String
+  url          String
+  source       String   @default("google_drive")
+  published    Boolean  @default(false)
+  approved     Boolean  @default(false)
+  approvedById String?
+  approvedAt   DateTime?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model ThankYouTemplate {
+  id        String   @id @default(cuid())
+  channel   String
+  language  String   @default("pt")
+  subject   String?
+  body      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ContactChannel {
+  id        String   @id @default(cuid())
+  type      String
+  label     String
+  value     String
+  enabled   Boolean  @default(false)
+  published Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ConsentRecord {
+  id         String   @id @default(cuid())
+  donorEmail String?
+  donorName  String?
+  channel    String
+  consent    Boolean
+  ip         String?
+  createdAt  DateTime @default(now())
+}
+
+model OutboundMessage {
+  id                String   @id @default(cuid())
+  toAddress         String
+  channel           String
+  templateId        String?
+  status            String   @default("pending")
+  attempts          Int      @default(0)
+  lastError         String?
+  donationIntentId  String?
+  sentAt            DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([channel, toAddress, donationIntentId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String
+  action    String
+  entity    String?
+  entityId  String?
+  detail    String?
+  ip        String?
+  createdAt DateTime @default(now())
+}

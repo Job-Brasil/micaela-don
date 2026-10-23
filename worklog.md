@@ -91,3 +91,37 @@ Stage Summary:
 - Repo https://github.com/Job-Brasil/micaela-don atualizado com código + README técnico + SECURITY.md.
 - Token GitHub usado apenas para o push (com consentimento do utilizador); removido do .git/config.
 - Utilizador deve: (a) revogar o token após deploy; (b) rotação de SESSION_SECRET/ADMIN_PASSWORD_HASH em produção; (c) aplicar supabase/schema.sql + rls.sql; (d) fornecer URLs individuais dos materiais do Drive via painel admin.
+
+---
+Task ID: 8
+Agent: orchestrator (main)
+Task: Corrigir integração Supabase PostgreSQL + resolver erro Vercel.
+
+Work Log:
+- AUDITORIA: causa raiz do erro Vercel identificada:
+  (1) prisma/schema.prisma tinha provider="sqlite" hardcoded → Prisma Client gerado para SQLite mas em produção DATABASE_URL é PostgreSQL → falha de inicialização em runtime.
+  (2) next.config.ts tinha output:"standalone" + build script com cp -r para standalone — desnecessário/problemático no Vercel.
+  (3) typescript.ignoreBuildErrors:true escondia erros de tipo reais.
+  (4) Sem postinstall:prisma generate — client não era regenerado para o provider correto durante o build.
+  (5) db.ts fazia log:['query'] em produção (barulhento, potenciais fugas).
+  (6) Sem validação de DATABASE_URL com mensagens claras.
+- CORREÇÕES:
+  • prisma/schema.prisma → provider="postgresql" (produção/Vercel) + directUrl + @@index.
+  • prisma/schema.dev.prisma → provider="sqlite" (sandbox/dev; selecionado via db:*:dev scripts, explícito não ambíguo).
+  • package.json: postinstall inteligente (scripts/postinstall.ts escolhe schema conforme DATABASE_URL); build = postinstall + next build; start = next start (sem standalone); db:generate/seed separados para dev e prod.
+  • next.config.ts: removido standalone + ignoreBuildErrors; adicionado serverExternalPackages:['@prisma/client'].
+  • src/lib/db.ts: lazy init via Proxy (evita falhar "collect page data" do build); logs condicionados por ambiente (query só em dev); assertDatabaseUrl com mensagens claras sem expor o valor da URL.
+  • scripts/seed.ts: guarda de ambiente (aborta se não --dev e DATABASE_URL não for postgres); idempotente (upsert create-only preserva edits admin).
+  • tsconfig.json: exclui examples/mini-services/tests/skills/scripts do type-checking (não são parte da app).
+  • supabase/schema.sql: adicionados índices correspondentes aos @@index do schema Prisma.
+  • .env.example: documentado formato PostgreSQL (porta 6543 + ?pgbouncer=true&connection_limit=1) e DIRECT_DATABASE_URL (porta 5432 para migrações).
+- VALIDAÇÃO:
+  • bun run lint: 0 erros, 0 warnings.
+  • bun run build: ✓ Compiled successfully, sem erros TypeScript (type-checking agora ativo), todas as rotas marcadas como Dynamic.
+  • Dev server (SQLite): GET / 200; POST /api/public/donation-intent 201; BD confirma intent persistido; login admin 200 + dashboard carrega 8 tabs.
+  • Agent Browser: sem erros de runtime/hydration; formulário e login funcionais.
+
+Stage Summary:
+- Causa do erro Vercel corrigida: provider PostgreSQL + postinstall generate + lazy init + build limpo.
+- Dev (SQLite sandbox) e Prod (PostgreSQL Supabase) têm schemas separados e explícitos; seleção via --schema e postinstall inteligente.
+- Próximo passo: utilizador define DATABASE_URL (postgres) + DIRECT_DATABASE_URL na Vercel, aplica supabase/schema.sql + rls.sql, corre seed contra prod, redeploy.

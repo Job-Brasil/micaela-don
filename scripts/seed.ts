@@ -1,14 +1,47 @@
 /**
- * Seed script — idempotent. Reads initial sensitive data from .env (gitignored),
- * NEVER from code. Seeds everything as DRAFT / DISABLED so nothing is public until
- * an authorized admin explicitly verifies and publishes it.
+ * Seed script — idempotent and safe.
  *
- * Run: bun run scripts/seed.ts
+ * Reads initial sensitive data from .env (gitignored), NEVER from code.
+ * Seeds everything as DRAFT / DISABLED so nothing is public until an
+ * authorized admin explicitly verifies and publishes it.
+ *
+ * USAGE:
+ *   - Dev (SQLite sandbox):   bun run seed:dev
+ *   - Prod (PostgreSQL):      bun run seed
+ *
+ * The --dev flag forces the dev behavior. Without it, the script refuses to run
+ * unless DATABASE_URL looks like PostgreSQL (production). It NEVER destroys data.
+ *
+ * Idempotency: every operation uses upsert with update:{} (create-only). Re-running
+ * does NOT overwrite existing values — so admin edits are preserved.
  */
 import { db } from '../src/lib/db'
 
+const isDev = process.argv.includes('--dev')
+const url = process.env.DATABASE_URL ?? ''
+const urlIsPostgres = url.startsWith('postgres') || url.startsWith('postgresql')
+
+if (!isDev && !urlIsPostgres) {
+  console.error(
+    '[seed] ABORTED: DATABASE_URL is not a PostgreSQL connection string.\n' +
+      '  - For local SQLite dev, run:  bun run seed:dev\n' +
+      '  - For production PostgreSQL, ensure DATABASE_URL points to Supabase and run: bun run seed',
+  )
+  process.exit(1)
+}
+
+if (isDev && urlIsPostgres) {
+  console.warn(
+    '[seed] WARNING: --dev flag set but DATABASE_URL looks like PostgreSQL. ' +
+      'Proceeding against a PostgreSQL database in dev mode.',
+  )
+}
+
+console.log(`[seed] target: ${isDev ? 'dev' : 'production'} (${urlIsPostgres ? 'PostgreSQL' : 'SQLite'})`)
+
 async function main() {
   // 1) Site settings (editable public text). Sensible Portuguese placeholders.
+  //    create-only: if an admin already edited a value, it is preserved.
   const settings: Record<string, string> = {
     'hero.eyebrow': 'Campanha de solidariedade',
     'hero.title': 'Um Gesto de Apoio — A história da Micaela',
@@ -32,6 +65,7 @@ async function main() {
   }
 
   // 2) EUR payment config — DRAFT (not approved, not published). Read from env.
+  //    create-only: preserves admin edits to real bank data.
   const holder = process.env.INIT_PAYMENT_HOLDER
   const bank = process.env.INIT_PAYMENT_BANK
   const iban = process.env.INIT_PAYMENT_IBAN
@@ -107,12 +141,12 @@ async function main() {
     },
   })
 
-  console.log('[seed] concluído. Tudo em rascunho / desativado.')
+  console.log('[seed] concluído. Tudo em rascunho / desativado. Dados existentes preservados.')
 }
 
 main()
   .catch((e) => {
-    console.error(e)
+    console.error('[seed] ERRO:', e?.message ?? e)
     process.exit(1)
   })
   .finally(async () => {
