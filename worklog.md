@@ -125,3 +125,31 @@ Stage Summary:
 - Causa do erro Vercel corrigida: provider PostgreSQL + postinstall generate + lazy init + build limpo.
 - Dev (SQLite sandbox) e Prod (PostgreSQL Supabase) têm schemas separados e explícitos; seleção via --schema e postinstall inteligente.
 - Próximo passo: utilizador define DATABASE_URL (postgres) + DIRECT_DATABASE_URL na Vercel, aplica supabase/schema.sql + rls.sql, corre seed contra prod, redeploy.
+
+---
+Task ID: 9
+Agent: orchestrator (main)
+Task: Corrigir erro 500 em produção (digest 3915118199).
+
+Work Log:
+- Confirmado via REST API Supabase: DB correta (tabelas existem, seed correu, RLS funciona).
+- Endpoint de diagnóstico revelou erro P2021: "The table public.SiteSetting does not exist".
+- CAUSA RAIZ: Prisma procurava tabelas CamelCase (SiteSetting) mas supabase/schema.sql cria snake_case (site_setting). Faltava @@map e @map no schema Prisma.
+- Correção 1: prisma/schema.prisma + schema.dev.prisma — adicionado @@map('snake_case') a 10 modelos + @map('snake_case') a todas as colunas camelCase.
+- Correção 2: getPublicSite() — queries sequenciais (Promise.all → await sequenciais) porque PgBouncer connection_limit=1 não suporta queries concorrentes.
+- Correção 3: outputFileTracingIncludes no next.config.ts para incluir engine binário Prisma no bundle serverless.
+- Correção 4: try/catch defensivo em getPublicSite() com fallback vazio + log sanitizado.
+- DB local SQLite recriada com nomes snake_case (db push --accept-data-loss, local apenas).
+
+Validação em PRODUÇÃO (https://micaela-don.vercel.app):
+- GET / -> HTTP 200 (antes: 500)
+- GET /api/public/site -> 200, settings com 9 chaves, hero.title correto, paymentStatus.exists=true
+- POST /api/public/donation-intent -> 201, intenção registada no Supabase
+- Admin login abre corretamente
+- Agent Browser: sem erros de runtime/hydration
+- Endpoint de diagnóstico removido após confirmação
+
+Stage Summary:
+- Causa raiz identificada e corrigida: @@map/@map para mapear CamelCase → snake_case.
+- Queries sequenciais para compatibilidade com PgBouncer connection_limit=1.
+- Produção funcional e testada end-to-end.
