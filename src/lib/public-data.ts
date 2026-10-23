@@ -37,16 +37,17 @@ export type PublicSite = {
  */
 export async function getPublicSite(): Promise<PublicSite> {
   try {
-    const [settings, payment, pix, materials, channels] = await Promise.all([
-      db.siteSetting.findMany(),
-      db.paymentConfig.findFirst({ orderBy: { updatedAt: 'desc' } }),
-      db.pixConfig.findFirst({ orderBy: { updatedAt: 'desc' } }),
-      db.campaignMaterial.findMany({
-        where: { approved: true, published: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-      db.contactChannel.findMany({ where: { enabled: true, published: true } }),
-    ])
+    // Run queries SEQUENTIALLY (not Promise.all) because Supabase's PgBouncer
+    // pool uses connection_limit=1. Concurrent queries on a single pooled
+    // connection can fail with timeout or "prepared statement" errors.
+    const settings = await db.siteSetting.findMany()
+    const payment = await db.paymentConfig.findFirst({ orderBy: { updatedAt: 'desc' } })
+    const pix = await db.pixConfig.findFirst({ orderBy: { updatedAt: 'desc' } })
+    const materials = await db.campaignMaterial.findMany({
+      where: { approved: true, published: true },
+      orderBy: { createdAt: 'desc' },
+    })
+    const channels = await db.contactChannel.findMany({ where: { enabled: true, published: true } })
 
     const settingsMap = settings.reduce<Record<string, string>>((acc, s) => {
       acc[s.key] = s.value
