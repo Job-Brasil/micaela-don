@@ -101,9 +101,13 @@ model DonationIntent {
   campaignId    String   @default("micaela") @map("campaign_id")
   currency      String
   amount        Float?
+  amountMinor   Int?     @map("amount_minor")
   donorName     String?  @map("donor_name")
   donorEmail    String?  @map("donor_email")
   donorWhatsapp String?  @map("donor_whatsapp")
+  donorCountry  String?  @map("donor_country")
+  paymentMethod String?  @map("payment_method")
+  wantPackMedia Boolean  @default(false) @map("want_pack_media")
   message       String?
   status        String   @default("received")
   confirmed     Boolean  @default(false)

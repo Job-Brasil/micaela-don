@@ -44,6 +44,7 @@ import {
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import type { PublicSite } from '@/lib/public-data'
 import { AdminApp } from '@/components/admin-app'
+import { DonationFlow } from '@/components/donation-flow'
 
 /* ----------------------------------------------------------------------------
  * Constants & helpers
@@ -158,6 +159,7 @@ export function PublicSite({ initial }: { initial: PublicSite }) {
           paymentStatus={initial.paymentStatus}
           pix={initial.pix}
           campaignId={initial.campaign?.id ?? 'micaela'}
+          campaignName={initial.campaign?.name ?? 'A história da Micaela'}
         />
 
         <MaterialsSection title={s['materials.title'] ?? 'Materiais'} materials={initial.materials} />
@@ -502,6 +504,7 @@ function DonateSection({
   paymentStatus,
   pix,
   campaignId,
+  campaignName,
 }: {
   title: string
   note: string
@@ -509,6 +512,7 @@ function DonateSection({
   paymentStatus: PublicSite['paymentStatus']
   pix: PublicSite['pix']
   campaignId: string
+  campaignName: string
 }) {
   return (
     <section
@@ -545,7 +549,7 @@ function DonateSection({
         </Tabs>
 
         <Separator className="my-12" />
-        <DonationForm campaignId={campaignId} />
+        <DonationFlow campaignId={campaignId} campaignName={campaignName} />
       </div>
     </section>
   )

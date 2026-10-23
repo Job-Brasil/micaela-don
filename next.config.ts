@@ -16,6 +16,7 @@ const DB_ROUTES = [
   "/api/public/site",
   "/api/public/pix-qr",
   "/api/public/donation-intent",
+  "/api/public/payment-methods",
   "/api/public/consent",
   "/api/payments/stripe/create-session",
   "/api/payments/pixgo/create",

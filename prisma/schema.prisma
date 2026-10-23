@@ -120,11 +120,22 @@ model DonationIntent {
   id            String   @id @default(cuid())
   campaignId    String   @default("micaela") @map("campaign_id")
   currency      String
+  /// Legacy Float amount (kept for backward compat; use amountMinor for new flows).
   amount        Float?
+  /// Amount in minor currency units (cents). This is the canonical value for
+  /// financial calculations — never use Float for money.
+  amountMinor   Int?     @map("amount_minor")
   donorName     String?  @map("donor_name")
   donorEmail    String?  @map("donor_email")
   donorWhatsapp String?  @map("donor_whatsapp")
+  /// ISO country code (PT, BR, ...) — donor's selected/detected region.
+  donorCountry  String?  @map("donor_country")
+  /// Selected payment method: mbway | pix_automatic | pix_manual | bank_transfer
+  paymentMethod String?  @map("payment_method")
+  /// Whether the donor opted to receive the Pack Media (digital thank-you materials).
+  wantPackMedia Boolean  @default(false) @map("want_pack_media")
   message       String?
+  /// pending | received | awaiting_manual_confirmation | paid | failed | cancelled | refunded
   status        String   @default("received")
   confirmed     Boolean  @default(false)
   confirmedAt   DateTime? @map("confirmed_at")
