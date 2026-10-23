@@ -14,6 +14,7 @@
 
 -- Enable RLS everywhere
 alter table site_setting        enable row level security;
+alter table site_asset          enable row level security;
 alter table payment_config      enable row level security;
 alter table pix_config          enable row level security;
 alter table donation_intent     enable row level security;
@@ -26,6 +27,7 @@ alter table audit_log           enable row level security;
 
 -- Drop existing policies (idempotent re-runs)
 drop policy if exists "public read site_setting" on site_setting;
+drop policy if exists "public read site_asset" on site_asset;
 drop policy if exists "public read payment_config" on payment_config;
 drop policy if exists "public read campaign_material" on campaign_material;
 drop policy if exists "public read contact_channel" on contact_channel;
@@ -37,6 +39,12 @@ drop policy if exists "anon insert consent_record" on consent_record;
 create policy "public read site_setting"
   on site_setting for select to anon, authenticated
   using (true);
+
+-- site_asset: anon can only read published assets (hero/material cover images).
+-- The image bytes are served via the server endpoint which checks published flag.
+create policy "public read site_asset"
+  on site_asset for select to anon, authenticated
+  using (published = true);
 
 create policy "public read payment_config"
   on payment_config for select to anon, authenticated

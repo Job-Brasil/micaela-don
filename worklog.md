@@ -153,3 +153,54 @@ Stage Summary:
 - Causa raiz identificada e corrigida: @@map/@map para mapear CamelCase → snake_case.
 - Queries sequenciais para compatibilidade com PgBouncer connection_limit=1.
 - Produção funcional e testada end-to-end.
+
+---
+Task ID: 4
+Agent: full-stack-developer
+Task: Redesign public-site.tsx V2
+
+Work Log:
+- Consultados worklog.md, public-data.ts (tipo PublicSite + hero.layout/coverImage/coverAlt/description), donation-intent/route.ts (já suporta consentChannels: string[] + donorWhatsapp), layout.tsx (fontes Geist), globals.css (vars shadcn), dev.log (server limpo).
+- Reescrito src/components/public-site.tsx por completo mantendo o contrato { initial: PublicSite } e o import { AdminApp }.
+- Header sticky refinado: logo circular rose com ring + ícone Heart; nav "História", "Materiais", CTA "Apoiar" (rounded-full), Admin discreto (só ícone em mobile).
+- Hero com 4 composições por hero.layout: none (gradiente quente + blurs), banner (full-bleed <img object-cover> + overlay + texto sobreposto), portrait (split md:grid-cols-2 com moldura halo gradiente), story-inline (texto; imagem vai para a StorySection em sticky). Fallback elegante quando imagem em falta.
+- StorySection: label editorial "01 — A história", Quote rose, H2 serif; imagem ao lado (md:sticky) quando layout=story-inline && hero.storyImage.
+- DonateSection: label "02", Tabs EUR/PIX (rounded-xl), EurCard e PixCard com rounded-2xl, halo ícone no header, CopyRow preservado com hover border + check verde após copiar.
+- DonationForm com NOVA lógica multi-canal: RadioGroup de 4 opções (none/email/whatsapp/both) em cards selecionáveis (has-[:checked]:border-rose-300); campos e-mail/WhatsApp aparecem condicionalmente; validação cliente (regex E.164 para WhatsApp, regex email); frase de consentimento memoizada (useMemo) "Consinto em receber um agradecimento por [canal]. Posso retirar este consentimento a qualquer momento."; POST envia consentChannels: string[] e donorWhatsapp alinhado com o schema zod do route.ts.
+- MaterialsSection: label "03", grid 1/2/3 cols; MaterialCard com cover aspect-[16/10] object-cover + badge categoria overlay + zoom-on-hover; fallback com ícone grande da categoria em gradiente stone quando não há coverImage; categorias mapeadas a ícones lucide (foto→Image, video→Video, documento→FileText, logo→Shapes, audio→Music, outro→Folder); descrição line-clamp-3; botão "Abrir" rounded-full.
+- Footer sticky (mt-auto): logo + nome serif, canais de contacto WhatsApp/email como botões rounded-full, Separator, copyright + nota de verificação administrativa.
+- SectionLabel partilhado com numeração editorial mono rose.
+- Microinterações discretas (150-300ms) envolvidas em motion-safe: para respeitar prefers-reduced-motion. Imagens fora do primeiro ecrã com loading="lazy". Hero usa <img> nativo (não next/image).
+- Paleta quente sobre CSS vars shadcn: rose-50/100/600/700/950, amber-50/100/700/950, stone-200/300/800 para bordas e textos. Sem indigo/blue.
+- Validação: bun run lint → 0 erros, 0 warnings (exit 0). dev.log: "✓ Compiled in 658ms", GET / 200 sem erros de runtime. curl http://localhost:3000/ → HTTP 200.
+
+Stage Summary:
+- public-site.tsx completamente redesenhado (V2 editorial) sem tocar em page.tsx, public-data.ts, db.ts, auth.ts ou qualquer rota de API.
+- Funcionalidades preservadas: tabs EUR/PIX, CopyRow, IBAN copy, QR PIX com gating de aprovação/publicação, <AdminApp /> via botão Admin, footer sticky com canais de contacto.
+- Nova funcionalidade: consentimento multi-canal (none/email/whatsapp/both) com campos condicionais, validação cliente e frase de consentimento RGPD-friendly, alinhado com o schema consentChannels: string[] já existente no route.ts.
+- Identidade editorial: serif nos títulos (font-serif), numeração por secção, paleta quente, microinterações discretas respeitando prefers-reduced-motion. Mobile-first responsivo (320px-375px verificado via grid max-w-6xl).
+- Lint limpo e dev server a compilar sem erros. Pronto para preview.
+
+---
+Task ID: 5
+Agent: full-stack-developer
+Task: Redesign admin-app.tsx V2 — hero config, material covers, human labels, sections.
+
+Work Log:
+- Lido worklog + admin-app.tsx atual + scripts/seed.ts + rotas /api/admin/assets, /api/admin/materials, /api/admin/site para confirmar contratos.
+- Confirmado contrato: POST /api/admin/assets devolve {id, previewUrl, ...}; POST/PATCH /api/admin/materials aceitam coverImageRef/coverAlt/description; /api/admin/site aceita Record<string,string>.
+- Criado componente reutilizável ImageUploader (upload via FileReader→dataURL→POST→asset:[id]; aceita também URL externa; mostra preview 80x80; botão Remover limpa o valor).
+- SiteTab reorganizada em 4 cards: "Página inicial" (eyebrow/title/subtitle), "Composição visual" (hero.layout Select + 3 pares imagem/alt com upload), "História" (title/body rows=5), "Outras secções" (donate.title/note, materials.title, footer.note).
+- MaterialsTab com capa: formulário de criação inclui coverImageRef (ImageUploader), coverAlt (Input), description (Textarea rows=2). Lista trocada de <table> para <ul> responsiva com thumbnail 56x56, badge categoria, descrição line-clamped, botão "Abrir ficheiro", e botão Editar que abre MaterialEditDialog.
+- MaterialEditDialog (Dialog shadcn) carrega material existente, permite editar todos os campos incluindo capa, chama PATCH /api/admin/materials/[id].
+- Rótulos humanos aplicados (ex.: "Texto de destaque (acima do título)" em vez de "hero.eyebrow"); descrições de ajuda em text-xs text-muted-foreground; nenhum identificador técnico visível ao administrador.
+- Melhorias UX: toasts com description para feedback visual; botões desativados durante saving; Loader2 em estados de loading; labels claras; layout responsivo (mobile-first, sm: breakpoints para desktop).
+- Removidos 3 comentários `eslint-disable-next-line @next/next/no-img-element` desnecessários (lint apontou como warnings).
+
+Stage Summary:
+- `bun run lint` → 0 erros, 0 warnings.
+- Dev server compila admin-app.tsx sem erros (GET / 200, GET /api/admin/session 401 — ambos esperados).
+- Componente começa com `'use client'`; autenticação (LoginView + /api/admin/session + /api/admin/login + /api/admin/logout) preservada 100%.
+- Nenhuma alteração a rotas API, src/lib/*, prisma/*, ou public-site.tsx — só admin-app.tsx foi reescrito.
+- Funcionalidades preservadas: EUR (config + approve + publish), PIX (upload + preview + approve + publish), Materiais (CRUD + approve + publish + NOVO coverImageRef/coverAlt/description + Editar), Donativos (confirm + reject + thankyou), Modelos (CRUD), Canais (enabled + published), Auditoria (read-only).
+- NOVAS funcionalidades: hero.layout Select, 3 campos de upload de imagens (banner, retrato, história) com previews via ImageUploader, capa+descrição+alt para materiais, dialog de edição de material.

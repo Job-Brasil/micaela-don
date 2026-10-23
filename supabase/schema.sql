@@ -13,6 +13,18 @@ create table if not exists site_setting (
   updated_at timestamptz not null default now()
 );
 
+-- Uploaded site assets (images) stored as base64. Served via server endpoint only.
+create table if not exists site_asset (
+  id         text primary key default gen_random_uuid()::text,
+  name       text not null,
+  mime       text not null,
+  image_data text not null,
+  width      integer,
+  height     integer,
+  published  boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
 -- EUR bank transfer config. NEVER public until published AND approved.
 create table if not exists payment_config (
   id            text primary key default gen_random_uuid()::text,
@@ -66,19 +78,22 @@ create table if not exists donation_intent (
 
 -- Campaign material catalog. Only approved + published appear publicly.
 create table if not exists campaign_material (
-  id             text primary key default gen_random_uuid()::text,
-  name           text not null,
-  category       text not null,
-  type           text not null,
-  url            text not null,
-  source         text not null default 'google_drive',
-  published      boolean not null default false,
-  approved       boolean not null default false,
-  approved_by_id text,
-  approved_at    timestamptz,
-  notes          text,
-  created_at     timestamptz not null default now(),
-  updated_at     timestamptz not null default now()
+  id              text primary key default gen_random_uuid()::text,
+  name            text not null,
+  category        text not null,
+  type            text not null,
+  url             text not null,
+  source          text not null default 'google_drive',
+  cover_image_ref text,
+  cover_alt       text,
+  description     text,
+  published       boolean not null default false,
+  approved        boolean not null default false,
+  approved_by_id  text,
+  approved_at     timestamptz,
+  notes           text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
 );
 
 create table if not exists thank_you_template (
@@ -165,3 +180,23 @@ create index if not exists idx_campaign_material_appr_pub on campaign_material (
 create index if not exists idx_consent_record_channel_email on consent_record (channel, donor_email);
 create index if not exists idx_outbound_message_status     on outbound_message (status);
 create index if not exists idx_audit_log_created_at       on audit_log (created_at);
+
+-- ============================================================================
+-- V2 migration: adds cover_image_ref, cover_alt, description to campaign_material
+-- and creates the site_asset table. Run this section if upgrading an existing DB.
+-- All statements are idempotent (IF NOT EXISTS).
+-- ============================================================================
+create table if not exists site_asset (
+  id         text primary key default gen_random_uuid()::text,
+  name       text not null,
+  mime       text not null,
+  image_data text not null,
+  width      integer,
+  height     integer,
+  published  boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table campaign_material add column if not exists cover_image_ref text;
+alter table campaign_material add column if not exists cover_alt text;
+alter table campaign_material add column if not exists description text;

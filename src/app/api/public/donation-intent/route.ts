@@ -10,9 +10,17 @@ const schema = z.object({
   amount: z.number().nonnegative().optional(),
   donorName: z.string().trim().max(120).optional(),
   donorEmail: z.string().trim().email().max(160).optional().or(z.literal('')),
+  donorWhatsapp: z.string().trim().max(40).optional().or(z.literal('')),
   message: z.string().trim().max(1000).optional(),
-  consentEmail: z.boolean().optional(),
+  // Consent channels: which channels the donor wants to receive thank-yous on.
+  consentChannels: z.array(z.enum(['email', 'whatsapp'])).default([]),
 })
+
+// Basic E.164-ish validation for WhatsApp numbers.
+const validateWhatsapp = (v: string): boolean => {
+  const cleaned = v.replace(/[\s\-()]/g, '')
+  return /^\+\d{8,15}$/.test(cleaned)
+}
 
 /**
  * Creates a donation INTENT. Submitting this form is NOT proof of payment.
@@ -32,24 +40,36 @@ export async function POST(req: NextRequest) {
   const d = parsed.data
   const ip = clientIp(req)
 
+  // Validate: if email consent is requested, email must be provided.
+  if (d.consentChannels.includes('email') && !d.donorEmail) {
+    return badRequest('Para consentir em receber agradecimento por e-mail, precisa de indicar o seu endereço.')
+  }
+  // Validate: if whatsapp consent is requested, a valid number must be provided.
+  if (d.consentChannels.includes('whatsapp') && (!d.donorWhatsapp || !validateWhatsapp(d.donorWhatsapp))) {
+    return badRequest('Para consentir em receber agradecimento por WhatsApp, indique um número válido com indicativo internacional (ex: +351 912 345 678).')
+  }
+
   const intent = await db.donationIntent.create({
     data: {
       currency: d.currency,
       amount: d.amount ?? null,
       donorName: d.donorName || null,
       donorEmail: d.donorEmail || null,
-      message: d.message || null,
+      message: [d.message, d.donorWhatsapp ? `WhatsApp: ${d.donorWhatsapp}` : null]
+        .filter(Boolean)
+        .join(' · ') || null,
       status: 'received',
       ip,
     },
   })
 
-  if (d.consentEmail && d.donorEmail) {
+  // Record consent per channel explicitly.
+  for (const channel of d.consentChannels) {
     await db.consentRecord.create({
       data: {
-        donorEmail: d.donorEmail,
+        donorEmail: d.donorEmail || null,
         donorName: d.donorName || null,
-        channel: 'email',
+        channel,
         consent: true,
         ip,
       },
@@ -61,7 +81,7 @@ export async function POST(req: NextRequest) {
     action: 'donation_intent_created',
     entity: 'DonationIntent',
     entityId: intent.id,
-    detail: `currency=${d.currency} amount=${d.amount ?? 'n/a'}`,
+    detail: `currency=${d.currency} amount=${d.amount ?? 'n/a'} consent=${d.consentChannels.join(',') || 'none'}`,
     ip,
   })
 

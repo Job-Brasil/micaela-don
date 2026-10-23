@@ -70,4 +70,4 @@ server.log
 
 # Supabase local config (keep schema.sql + rls.sql committed, ignore local env)
 /supabase/.env
-/supabase/.temp
+/supabase/.temptool-results/

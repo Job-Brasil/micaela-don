@@ -29,6 +29,23 @@ model SiteSetting {
   @@map("site_setting")
 }
 
+/// Uploaded site assets (images) stored as base64 server-side. Used for hero images,
+/// material covers, etc. Served via /api/public/asset/[id] (only published assets).
+model SiteAsset {
+  id        String   @id @default(cuid())
+  name      String
+  mime      String
+  /// Base64-encoded image data. Served via server endpoint, never directly to anon.
+  data      String   @map("image_data")
+  width     Int?
+  height    Int?
+  /// When true, the asset may be served publicly (e.g. hero/material cover images).
+  published Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("site_asset")
+}
+
 /// EUR bank transfer configuration. NEVER published until verified + approved by admin.
 model PaymentConfig {
   id           String    @id @default(cuid())
@@ -95,6 +112,10 @@ model CampaignMaterial {
   type         String
   url          String
   source       String   @default("google_drive")
+  /// Optional cover image. References a SiteAsset id OR an external URL.
+  coverImageRef String? @map("cover_image_ref")
+  coverAlt      String? @map("cover_alt")
+  description   String?
   published    Boolean  @default(false)
   approved     Boolean  @default(false)
   approvedById String?  @map("approved_by_id")

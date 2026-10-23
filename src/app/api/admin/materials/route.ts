@@ -18,6 +18,9 @@ const postSchema = z.object({
   type: z.string().trim().max(80),
   url: z.string().trim().url().max(500),
   source: z.string().trim().max(40).optional(),
+  coverImageRef: z.string().trim().max(500).optional().nullable(),
+  coverAlt: z.string().trim().max(300).optional().nullable(),
+  description: z.string().trim().max(500).optional().nullable(),
   notes: z.string().trim().max(500).optional().nullable(),
 })
 
@@ -41,6 +44,9 @@ export async function POST(req: NextRequest) {
       type: d.type,
       url: d.url,
       source: d.source ?? 'google_drive',
+      coverImageRef: d.coverImageRef ?? null,
+      coverAlt: d.coverAlt ?? null,
+      description: d.description ?? null,
       published: false,
       approved: false,
       notes: d.notes ?? null,

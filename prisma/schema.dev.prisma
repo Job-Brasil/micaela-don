@@ -24,6 +24,20 @@ model SiteSetting {
   @@map("site_setting")
 }
 
+/// Uploaded site assets (images) stored as base64 server-side.
+model SiteAsset {
+  id        String   @id @default(cuid())
+  name      String
+  mime      String
+  data      String   @map("image_data")
+  width     Int?
+  height    Int?
+  published Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("site_asset")
+}
+
 model PaymentConfig {
   id           String    @id @default(cuid())
   currency     String    @default("EUR")
@@ -86,6 +100,9 @@ model CampaignMaterial {
   type         String
   url          String
   source       String   @default("google_drive")
+  coverImageRef String? @map("cover_image_ref")
+  coverAlt      String? @map("cover_alt")
+  description   String?
   published    Boolean  @default(false)
   approved     Boolean  @default(false)
   approvedById String?  @map("approved_by_id")

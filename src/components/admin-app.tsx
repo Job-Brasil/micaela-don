@@ -21,6 +21,10 @@ import {
   XCircle,
   Loader2,
   Clock,
+  Pencil,
+  ImageIcon,
+  ExternalLink,
+  Save,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,6 +36,14 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/admin-client'
 
 type Tab = 'site' | 'payment' | 'pix' | 'materials' | 'donations' | 'templates' | 'channels' | 'audit'
@@ -61,7 +73,7 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      <div className="flex items-center justify-between border-b px-4 py-3">
+      <header className="flex items-center justify-between border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-rose-600" />
           <span className="text-sm font-semibold">Painel de Administração</span>
@@ -76,7 +88,7 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
             <X className="h-4 w-4" />
           </Button>
         </div>
-      </div>
+      </header>
 
       <div className="flex-1 overflow-y-auto">
         {authed === null ? (
@@ -115,6 +127,9 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ============================================================
+// Login (preserved)
+// ============================================================
 function LoginView({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -157,7 +172,7 @@ function LoginView({ onLoggedIn }: { onLoggedIn: () => void }) {
               <Input id="adm-pass" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
             <Button type="submit" disabled={loading}>
-              {loading ? 'A entrar…' : 'Entrar'}
+              {loading ? <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> A entrar…</> : 'Entrar'}
             </Button>
           </form>
         </CardContent>
@@ -166,7 +181,9 @@ function LoginView({ onLoggedIn }: { onLoggedIn: () => void }) {
   )
 }
 
-// ---------- reusable bits ----------
+// ============================================================
+// Reusable bits
+// ============================================================
 function useAdmin<T>(url: string) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
@@ -194,33 +211,174 @@ function useAdmin<T>(url: string) {
 
 function LoadingRow() {
   return (
-    <div className="flex items-center gap-2 p-4 text-muted-foreground">
+    <div className="flex items-center gap-2 p-10 text-muted-foreground">
       <Loader2 className="h-4 w-4 animate-spin" /> A carregar…
     </div>
   )
 }
 
-// ---------- Site tab ----------
-const SITE_KEYS = [
-  'hero.eyebrow',
-  'hero.title',
-  'hero.subtitle',
-  'story.title',
-  'story.body',
-  'donate.title',
-  'donate.note',
-  'materials.title',
-  'footer.note',
-] as const
+function FieldLabel({ htmlFor, label, description }: { htmlFor?: string; label: string; description?: string }) {
+  return (
+    <div className="grid gap-0.5">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      {description && <p className="text-xs text-muted-foreground">{description}</p>}
+    </div>
+  )
+}
+
+function ToggleLine({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <Switch checked={checked} onCheckedChange={onChange} />
+      {label}
+    </label>
+  )
+}
+
+function StatusRow({ approved, published }: { approved: boolean; published: boolean }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Badge variant={approved ? 'default' : 'secondary'}>
+        {approved ? <CheckCircle2 className="mr-1 h-3 w-3" /> : <Clock className="mr-1 h-3 w-3" />}
+        {approved ? 'Aprovado' : 'Por aprovar'}
+      </Badge>
+      <Badge variant={published ? 'default' : 'secondary'}>
+        {published ? <ShieldCheck className="mr-1 h-3 w-3" /> : <Clock className="mr-1 h-3 w-3" />}
+        {published ? 'Publicado' : 'Não publicado'}
+      </Badge>
+    </div>
+  )
+}
+
+function SaveButton({ saving, label = 'Guardar', savingLabel = 'A guardar…', onClick, className }: { saving: boolean; label?: string; savingLabel?: string; onClick: () => void; className?: string }) {
+  return (
+    <Button onClick={onClick} disabled={saving} className={className}>
+      {saving ? <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> {savingLabel}</> : <><Save className="mr-1 h-4 w-4" /> {label}</>}
+    </Button>
+  )
+}
+
+// ============================================================
+// Image uploader (reusable)
+// ============================================================
+function assetPreviewUrl(value: string): string | null {
+  if (!value) return null
+  if (value.startsWith('asset:')) {
+    const id = value.slice('asset:'.length)
+    if (!id) return null
+    return `/api/admin/assets/${encodeURIComponent(id)}/preview`
+  }
+  if (/^https?:\/\//i.test(value)) return value
+  return null
+}
+
+function ImageUploader({
+  value,
+  onChange,
+  accept = 'image/*',
+  label,
+  description,
+  assetName = 'Imagem do site',
+  className,
+}: {
+  value: string
+  onChange: (v: string) => void
+  accept?: string
+  label?: string
+  description?: string
+  assetName?: string
+  className?: string
+}) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const previewUrl = assetPreviewUrl(value)
+
+  const upload = async (file: File) => {
+    setUploading(true)
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(r.result as string)
+        r.onerror = reject
+        r.readAsDataURL(file)
+      })
+      const res = await apiFetch<{ id: string; previewUrl: string }>('/api/admin/assets', {
+        method: 'POST',
+        body: JSON.stringify({ name: file.name || assetName, mime: file.type, data: dataUrl, published: true }),
+      })
+      onChange(`asset:${res.id}`)
+      toast.success('Imagem carregada')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erro no carregamento da imagem')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className={`grid gap-2 ${className ?? ''}`}>
+      {label && <FieldLabel label={label} description={description} />}
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted/40">
+          {previewUrl ? (
+            <img src={previewUrl} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <ImageIcon className="h-6 w-6 text-muted-foreground" />
+          )}
+        </div>
+        <div className="grid min-w-[180px] flex-1 gap-2">
+          <Input
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="Cole um URL ou carregue uma imagem"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={uploading}>
+              {uploading ? <><Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> A carregar…</> : <><Upload className="mr-1 h-3.5 w-3.5" /> Carregar imagem</>}
+            </Button>
+            {value && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => onChange('')}>
+                <Trash2 className="mr-1 h-3.5 w-3.5" /> Remover
+              </Button>
+            )}
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept={accept}
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) upload(f)
+              e.target.value = ''
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// Site tab — V2 with hero config + sections
+// ============================================================
+const HERO_LAYOUTS: { value: string; label: string; description: string }[] = [
+  { value: 'none', label: 'Sem imagem', description: 'Apenas texto no topo.' },
+  { value: 'banner', label: 'Banner horizontal', description: 'Imagem larga por baixo do título.' },
+  { value: 'portrait', label: 'Retato vertical', description: 'Imagem de retrato ao lado do texto.' },
+  { value: 'story-inline', label: 'Imagem junto à história', description: 'Imagem aparece na secção da história.' },
+]
 
 function SiteTab() {
-  const { data, loading, reload } = useAdmin<{ settings: Record<string, string> }>('/api/admin/site')
+  const { data, loading } = useAdmin<{ settings: Record<string, string> }>('/api/admin/site')
   const [vals, setVals] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (data?.settings) setVals(data.settings)
   }, [data])
+
+  const set = (k: string) => (v: string) => setVals((prev) => ({ ...prev, [k]: v }))
 
   const save = async () => {
     setSaving(true)
@@ -229,51 +387,168 @@ function SiteTab() {
         method: 'PUT',
         body: JSON.stringify({ settings: vals }),
       })
-      toast.success('Conteúdo guardado')
-      reload()
+      toast.success('Conteúdo guardado', { description: 'As alterações estão visíveis na página pública.' })
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível guardar.')
     } finally {
       setSaving(false)
     }
   }
 
   if (loading) return <LoadingRow />
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">Conteúdo público</CardTitle>
-        <CardDescription>Textos editáveis da página. As alterações são imediatas na página pública.</CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        {SITE_KEYS.map((k) => (
-          <div key={k} className="grid gap-2">
-            <Label htmlFor={`s-${k}`}>{k}</Label>
-            {k === 'story.body' || k === 'hero.subtitle' ? (
-              <Textarea
-                id={`s-${k}`}
-                value={vals[k] ?? ''}
-                onChange={(e) => setVals((v) => ({ ...v, [k]: e.target.value }))}
-                rows={k === 'story.body' ? 5 : 2}
-              />
-            ) : (
-              <Input
-                id={`s-${k}`}
-                value={vals[k] ?? ''}
-                onChange={(e) => setVals((v) => ({ ...v, [k]: e.target.value }))}
-              />
-            )}
+    <div className="grid gap-4">
+      {/* Página inicial */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Página inicial</CardTitle>
+          <CardDescription>Os textos que aparecem no topo da página pública.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-hero.eyebrow" label="Texto de destaque (acima do título)" description="Frase curta que aparece acima do título, em maiúsculas." />
+            <Input id="s-hero.eyebrow" value={vals['hero.eyebrow'] ?? ''} onChange={(e) => set('hero.eyebrow')(e.target.value)} />
           </div>
-        ))}
-        <Button onClick={save} disabled={saving} className="w-full sm:w-auto">
-          {saving ? 'A guardar…' : 'Guardar conteúdo'}
-        </Button>
-      </CardContent>
-    </Card>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-hero.title" label="Título principal da página" description="O título grande do topo." />
+            <Input id="s-hero.title" value={vals['hero.title'] ?? ''} onChange={(e) => set('hero.title')(e.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-hero.subtitle" label="Subtítulo principal" description="Frase de apoio abaixo do título." />
+            <Textarea id="s-hero.subtitle" value={vals['hero.subtitle'] ?? ''} onChange={(e) => set('hero.subtitle')(e.target.value)} rows={2} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Composição visual */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Composição visual</CardTitle>
+          <CardDescription>Escolha o tipo de composição e carregue as imagens correspondentes.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-5">
+          <div className="grid gap-2">
+            <FieldLabel label="Composição do hero" description="Determina onde e como as imagens aparecem no topo." />
+            <Select value={vals['hero.layout'] ?? 'none'} onValueChange={(v) => set('hero.layout')(v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {HERO_LAYOUTS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>
+                    <div className="grid">
+                      <span>{l.label}</span>
+                      <span className="text-xs text-muted-foreground">{l.description}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Separator />
+
+          <div className="grid gap-3">
+            <ImageUploader
+              label="Imagem do banner (horizontal)"
+              description="Imagem larga usada quando a composição é 'Banner horizontal'."
+              assetName="Banner do hero"
+              value={vals['hero.bannerImage'] ?? ''}
+              onChange={set('hero.bannerImage')}
+            />
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="s-hero.bannerAlt" label="Texto alternativo do banner" description="Descrição da imagem para leitores de ecrã e SEO." />
+              <Input id="s-hero.bannerAlt" value={vals['hero.bannerAlt'] ?? ''} onChange={(e) => set('hero.bannerAlt')(e.target.value)} />
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="grid gap-3">
+            <ImageUploader
+              label="Imagem de retrato (vertical)"
+              description="Imagem vertical usada na composição de retrato."
+              assetName="Retrato do hero"
+              value={vals['hero.portraitImage'] ?? ''}
+              onChange={set('hero.portraitImage')}
+            />
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="s-hero.portraitAlt" label="Texto alternativo do retrato" description="Descrição para leitores de ecrã." />
+              <Input id="s-hero.portraitAlt" value={vals['hero.portraitAlt'] ?? ''} onChange={(e) => set('hero.portraitAlt')(e.target.value)} />
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="grid gap-3">
+            <ImageUploader
+              label="Imagem junto à história"
+              description="Imagem apresentada na secção da história."
+              assetName="Imagem da história"
+              value={vals['hero.storyImage'] ?? ''}
+              onChange={set('hero.storyImage')}
+            />
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="s-hero.storyAlt" label="Texto alternativo da imagem da história" description="Descrição para leitores de ecrã." />
+              <Input id="s-hero.storyAlt" value={vals['hero.storyAlt'] ?? ''} onChange={(e) => set('hero.storyAlt')(e.target.value)} />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* História */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">História</CardTitle>
+          <CardDescription>A secção que conta a história da Micaela.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-story.title" label="Título da história" />
+            <Input id="s-story.title" value={vals['story.title'] ?? ''} onChange={(e) => set('story.title')(e.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-story.body" label="Texto da história" description="Texto longo. Pode usar parágrafos separados por linha em branco." />
+            <Textarea id="s-story.body" value={vals['story.body'] ?? ''} onChange={(e) => set('story.body')(e.target.value)} rows={5} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Secções */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Outras secções</CardTitle>
+          <CardDescription>Títulos e notas das restantes secções da página.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-donate.title" label="Título da secção de apoio" />
+            <Input id="s-donate.title" value={vals['donate.title'] ?? ''} onChange={(e) => set('donate.title')(e.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-donate.note" label="Nota sobre confirmação de donativos" description="Aviso apresentado abaixo do formulário." />
+            <Textarea id="s-donate.note" value={vals['donate.note'] ?? ''} onChange={(e) => set('donate.note')(e.target.value)} rows={2} />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-materials.title" label="Título da secção de materiais" />
+            <Input id="s-materials.title" value={vals['materials.title'] ?? ''} onChange={(e) => set('materials.title')(e.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="s-footer.note" label="Texto do rodapé" />
+            <Input id="s-footer.note" value={vals['footer.note'] ?? ''} onChange={(e) => set('footer.note')(e.target.value)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex justify-end">
+        <SaveButton saving={saving} onClick={save} />
+      </div>
+    </div>
   )
 }
 
-// ---------- Payment (EUR) tab ----------
+// ============================================================
+// Payment (EUR) tab — preserved
+// ============================================================
 type PaymentCfg = {
   id: string
   holder: string
@@ -302,10 +577,10 @@ function PaymentTab() {
     try {
       const body = { ...form, ...patch }
       await apiFetch('/api/admin/payment-config', { method: 'PUT', body: JSON.stringify(body) })
-      toast.success('Configuração guardada')
+      toast.success('Configuração guardada', { description: 'Dados bancários atualizados.' })
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível guardar.')
     } finally {
       setSaving(false)
     }
@@ -319,11 +594,11 @@ function PaymentTab() {
           <Landmark className="h-5 w-5" /> Pagamento EUR (transferência)
         </CardTitle>
         <CardDescription>
-          Dados privados. Só são visíveis na página pública quando aprovados e publicados.
+          Dados privados. Só são visíveis na página pública quando verificados e publicados.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="grid gap-2"><Label>Titular</Label><Input value={form.holder ?? ''} onChange={(e) => setForm((f) => ({ ...f, holder: e.target.value }))} /></div>
           <div className="grid gap-2"><Label>Banco</Label><Input value={form.bank ?? ''} onChange={(e) => setForm((f) => ({ ...f, bank: e.target.value }))} /></div>
           <div className="grid gap-2"><Label>IBAN</Label><Input value={form.iban ?? ''} onChange={(e) => setForm((f) => ({ ...f, iban: e.target.value }))} className="font-mono" /></div>
@@ -337,21 +612,11 @@ function PaymentTab() {
         </div>
         <Separator />
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <ToggleLine
-              label="Verificado (aprovado)"
-              checked={!!form.approved}
-              onChange={(v) => save({ approved: v })}
-            />
-            <ToggleLine
-              label="Publicado na página pública"
-              checked={!!form.published}
-              onChange={(v) => save({ published: v })}
-            />
+          <div className="flex flex-wrap items-center gap-3">
+            <ToggleLine label="Verificado (aprovado)" checked={!!form.approved} onChange={(v) => save({ approved: v })} />
+            <ToggleLine label="Publicado na página pública" checked={!!form.published} onChange={(v) => save({ published: v })} />
           </div>
-          <Button onClick={() => save()} disabled={saving}>
-            {saving ? 'A guardar…' : 'Guardar dados'}
-          </Button>
+          <SaveButton saving={saving} onClick={() => save()} label="Guardar dados" />
         </div>
         <StatusRow approved={!!cfg?.approved} published={!!cfg?.published} />
       </CardContent>
@@ -359,31 +624,9 @@ function PaymentTab() {
   )
 }
 
-function ToggleLine({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label className="flex items-center gap-2 text-sm">
-      <Switch checked={checked} onCheckedChange={onChange} />
-      {label}
-    </label>
-  )
-}
-
-function StatusRow({ approved, published }: { approved: boolean; published: boolean }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      <Badge variant={approved ? 'default' : 'secondary'}>
-        {approved ? <CheckCircle2 className="mr-1 h-3 w-3" /> : <Clock className="mr-1 h-3 w-3" />}
-        {approved ? 'Aprovado' : 'Por aprovar'}
-      </Badge>
-      <Badge variant={published ? 'default' : 'secondary'}>
-        {published ? <ShieldCheck className="mr-1 h-3 w-3" /> : <Clock className="mr-1 h-3 w-3" />}
-        {published ? 'Publicado' : 'Não publicado'}
-      </Badge>
-    </div>
-  )
-}
-
-// ---------- PIX tab ----------
+// ============================================================
+// PIX tab — preserved
+// ============================================================
 type PixCfg = {
   id?: string
   qrPresent: boolean
@@ -421,7 +664,7 @@ function PixTab() {
         method: 'POST',
         body: JSON.stringify({ qrImage: dataUrl, beneficiaryName: beneficiary, notes }),
       })
-      toast.success('QR carregado (pendente de aprovação)')
+      toast.success('QR carregado', { description: 'Pendente de verificação.' })
       reload()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Erro no carregamento')
@@ -440,7 +683,7 @@ function PixTab() {
       toast.success('PIX atualizado')
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível guardar.')
     } finally {
       setSaving(false)
     }
@@ -459,14 +702,14 @@ function PixTab() {
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="grid gap-2"><Label>Beneficiário</Label><Input value={beneficiary} onChange={(e) => setBeneficiary(e.target.value)} /></div>
         </div>
         <div className="grid gap-2"><Label>Notas internas</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} /></div>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={uploading}>
-            <Upload className="mr-1 h-4 w-4" /> {uploading ? 'A carregar…' : 'Carregar QR Code'}
+            {uploading ? <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> A carregar…</> : <><Upload className="mr-1 h-4 w-4" /> Carregar QR Code</>}
           </Button>
           <input
             ref={fileRef}
@@ -488,7 +731,7 @@ function PixTab() {
           <>
             <Separator />
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <ToggleLine label="Verificado (aprovado)" checked={cfg.approved} onChange={(v) => save({ approved: v })} />
                 <ToggleLine label="Publicado" checked={cfg.published} onChange={(v) => save({ published: v })} />
               </div>
@@ -504,7 +747,9 @@ function PixTab() {
   )
 }
 
-// ---------- Materials tab ----------
+// ============================================================
+// Materials tab — V2 with covers + edit dialog
+// ============================================================
 type Material = {
   id: string
   name: string
@@ -512,14 +757,54 @@ type Material = {
   type: string
   url: string
   source: string
+  coverImageRef: string | null
+  coverAlt: string | null
+  description: string | null
   approved: boolean
   published: boolean
 }
 
+const MATERIAL_CATEGORIES: { value: string; label: string }[] = [
+  { value: 'foto', label: 'Foto' },
+  { value: 'video', label: 'Vídeo' },
+  { value: 'documento', label: 'Documento' },
+  { value: 'logo', label: 'Logótipo' },
+  { value: 'audio', label: 'Áudio' },
+  { value: 'outro', label: 'Outro' },
+]
+
+function categoryLabel(v: string) {
+  return MATERIAL_CATEGORIES.find((c) => c.value === v)?.label ?? v
+}
+
+function MaterialCover({ material, className }: { material: Pick<Material, 'coverImageRef' | 'coverAlt' | 'category'>; className?: string }) {
+  const url = material.coverImageRef ? assetPreviewUrl(material.coverImageRef) : null
+  return (
+    <div className={`overflow-hidden rounded-md border bg-muted/40 ${className ?? ''}`}>
+      {url ? (
+        <img src={url} alt={material.coverAlt ?? ''} className="h-full w-full object-cover" />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center">
+          <ImageIcon className="h-5 w-5 text-muted-foreground" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MaterialsTab() {
   const { data, loading, reload } = useAdmin<{ materials: Material[] }>('/api/admin/materials')
-  const [form, setForm] = useState({ name: '', category: 'foto', type: '', url: '' })
+  const [form, setForm] = useState({
+    name: '',
+    category: 'foto',
+    type: '',
+    url: '',
+    coverImageRef: '',
+    coverAlt: '',
+    description: '',
+  })
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<Material | null>(null)
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -527,13 +812,21 @@ function MaterialsTab() {
     try {
       await apiFetch('/api/admin/materials', {
         method: 'POST',
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          name: form.name,
+          category: form.category,
+          type: form.type,
+          url: form.url,
+          coverImageRef: form.coverImageRef || null,
+          coverAlt: form.coverAlt || null,
+          description: form.description || null,
+        }),
       })
-      toast.success('Material adicionado (pendente de aprovação)')
-      setForm({ name: '', category: 'foto', type: '', url: '' })
+      toast.success('Material adicionado', { description: 'Pendente de aprovação.' })
+      setForm({ name: '', category: 'foto', type: '', url: '', coverImageRef: '', coverAlt: '', description: '' })
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível adicionar.')
     } finally {
       setCreating(false)
     }
@@ -545,7 +838,7 @@ function MaterialsTab() {
       toast.success('Atualizado')
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível atualizar.')
     }
   }
 
@@ -556,7 +849,7 @@ function MaterialsTab() {
       toast.success('Eliminado')
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível eliminar.')
     }
   }
 
@@ -565,71 +858,231 @@ function MaterialsTab() {
   return (
     <div className="grid gap-4">
       <Card>
-        <CardHeader><CardTitle className="text-lg">Adicionar material</CardTitle>
-          <CardDescription>Catálogo da pasta da campanha. Criado como pendente de aprovação.</CardDescription></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-lg">Adicionar material</CardTitle>
+          <CardDescription>Catálogo da pasta da campanha. Criado como pendente de aprovação.</CardDescription>
+        </CardHeader>
         <CardContent>
-          <form onSubmit={create} className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-2"><Label>Nome</Label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required /></div>
-            <div className="grid gap-2"><Label>Categoria</Label>
-              <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {['foto', 'video', 'documento', 'logo', 'audio', 'outro'].map((c) => (
-                    <SelectItem key={c} value={c}>{c}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <form onSubmit={create} className="grid gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <FieldLabel htmlFor="m-name" label="Nome" description="Título do material apresentado ao visitante." />
+                <Input id="m-name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel label="Categoria" />
+                <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MATERIAL_CATEGORIES.map((c) => (
+                      <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel htmlFor="m-type" label="Tipo de ficheiro" description="MIME ou extensão, ex.: image/png, video/mp4." />
+                <Input id="m-type" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} placeholder="image/png" required />
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel htmlFor="m-url" label="URL do material" description="Endereço público do ficheiro (Google Drive, etc.)." />
+                <Input id="m-url" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://…" required />
+              </div>
             </div>
-            <div className="grid gap-2"><Label>Tipo (mime/ext)</Label><Input value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} placeholder="image/png" required /></div>
-            <div className="grid gap-2"><Label>URL</Label><Input value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://…" required /></div>
-            <div className="sm:col-span-2"><Button type="submit" disabled={creating}>{creating ? 'A adicionar…' : 'Adicionar material'}</Button></div>
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="m-desc" label="Descrição" description="Texto curto apresentado por baixo do nome (opcional)." />
+              <Textarea id="m-desc" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} />
+            </div>
+            <ImageUploader
+              label="Imagem de capa"
+              description="Capa do material. Pode carregar uma imagem ou colar um URL."
+              assetName="Capa de material"
+              value={form.coverImageRef}
+              onChange={(v) => setForm((f) => ({ ...f, coverImageRef: v }))}
+            />
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="m-alt" label="Texto alternativo da capa" description="Descrição para leitores de ecrã." />
+              <Input id="m-alt" value={form.coverAlt} onChange={(e) => setForm((f) => ({ ...f, coverAlt: e.target.value }))} />
+            </div>
+            <div>
+              <Button type="submit" disabled={creating}>
+                {creating ? <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> A adicionar…</> : 'Adicionar material'}
+              </Button>
+            </div>
           </form>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-lg">Materiais ({list.length})</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-lg">Materiais ({list.length})</CardTitle>
+          <CardDescription>Capa, descrição e estado de cada material.</CardDescription>
+        </CardHeader>
         <CardContent className="p-0">
-          <div className="max-h-96 overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-muted/50 text-left">
-                <tr>
-                  <th className="p-3">Nome</th><th className="p-3">Categoria</th>
-                  <th className="p-3">Estado</th><th className="p-3 text-right">Ações</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="max-h-[28rem] overflow-y-auto">
+            {list.length === 0 ? (
+              <div className="p-8 text-center text-sm text-muted-foreground">Sem materiais. Adicione o primeiro acima.</div>
+            ) : (
+              <ul className="divide-y">
                 {list.map((m) => (
-                  <tr key={m.id} className="border-t">
-                    <td className="p-3"><div className="font-medium">{m.name}</div><a href={m.url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">{m.url}</a></td>
-                    <td className="p-3"><Badge variant="secondary">{m.category}</Badge></td>
-                    <td className="p-3"><StatusRow approved={m.approved} published={m.published} /></td>
-                    <td className="p-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="outline" onClick={() => patch(m, { approved: !m.approved })}>
+                  <li key={m.id} className="flex flex-wrap items-center gap-3 p-3 sm:flex-nowrap">
+                    <MaterialCover material={m} className="h-14 w-14 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{m.name}</span>
+                        <Badge variant="secondary">{categoryLabel(m.category)}</Badge>
+                      </div>
+                      {m.description && <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{m.description}</p>}
+                      <a href={m.url} target="_blank" rel="noreferrer" className="mt-0.5 inline-flex items-center gap-1 text-xs text-rose-700 hover:underline dark:text-rose-400">
+                        <ExternalLink className="h-3 w-3" /> Abrir ficheiro
+                      </a>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <StatusRow approved={m.approved} published={m.published} />
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <Button size="sm" variant="outline" onClick={() => setEditing(m)}>
+                          <Pencil className="mr-1 h-3.5 w-3.5" /> Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => patch(m, { approved: !m.approved })}
+                          title={m.approved ? 'Desaprovar' : 'Aprovar'}
+                        >
                           {m.approved ? <XCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                         </Button>
-                        <Button size="sm" variant="outline" onClick={() => patch(m, { published: !m.published })} disabled={!m.approved && !m.published}>
-                          Publicar
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => patch(m, { published: !m.published })}
+                          disabled={!m.approved && !m.published}
+                        >
+                          {m.published ? 'Ocultar' : 'Publicar'}
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => remove(m)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                        <Button size="sm" variant="ghost" onClick={() => remove(m)} title="Eliminar">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </div>
+                  </li>
                 ))}
-                {list.length === 0 && (
-                  <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">Sem materiais.</td></tr>
-                )}
-              </tbody>
-            </table>
+              </ul>
+            )}
           </div>
         </CardContent>
       </Card>
+
+      {editing && (
+        <MaterialEditDialog
+          material={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            reload()
+          }}
+        />
+      )}
     </div>
   )
 }
 
-// ---------- Donations tab ----------
+function MaterialEditDialog({ material, onClose, onSaved }: { material: Material; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    name: material.name,
+    category: material.category,
+    type: material.type,
+    url: material.url,
+    coverImageRef: material.coverImageRef ?? '',
+    coverAlt: material.coverAlt ?? '',
+    description: material.description ?? '',
+  })
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await apiFetch(`/api/admin/materials/${material.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: form.name,
+          category: form.category,
+          type: form.type,
+          url: form.url,
+          coverImageRef: form.coverImageRef || null,
+          coverAlt: form.coverAlt || null,
+          description: form.description || null,
+        }),
+      })
+      toast.success('Material atualizado')
+      onSaved()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Não foi possível guardar.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Editar material</DialogTitle>
+          <DialogDescription>Atualize os detalhes do material. As alterações de capa e descrição são aplicadas imediatamente.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-2">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="e-name" label="Nome" />
+              <Input id="e-name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+            </div>
+            <div className="grid gap-2">
+              <FieldLabel label="Categoria" />
+              <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MATERIAL_CATEGORIES.map((c) => (
+                    <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="e-type" label="Tipo de ficheiro" />
+              <Input id="e-type" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} />
+            </div>
+            <div className="grid gap-2">
+              <FieldLabel htmlFor="e-url" label="URL do material" />
+              <Input id="e-url" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="e-desc" label="Descrição" />
+            <Textarea id="e-desc" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} />
+          </div>
+          <ImageUploader
+            label="Imagem de capa"
+            description="Carregue uma imagem ou cole um URL."
+            assetName="Capa de material"
+            value={form.coverImageRef}
+            onChange={(v) => setForm((f) => ({ ...f, coverImageRef: v }))}
+          />
+          <div className="grid gap-2">
+            <FieldLabel htmlFor="e-alt" label="Texto alternativo da capa" />
+            <Input id="e-alt" value={form.coverAlt} onChange={(e) => setForm((f) => ({ ...f, coverAlt: e.target.value }))} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={saving}>Cancelar</Button>
+          <SaveButton saving={saving} onClick={save} label="Guardar alterações" />
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================================================
+// Donations tab — preserved
+// ============================================================
 type Donation = {
   id: string
   currency: string
@@ -652,16 +1105,16 @@ function DonationsTab() {
       toast.success('Donativo atualizado')
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível atualizar.')
     }
   }
   const sendThanks = async (d: Donation) => {
     try {
       await apiFetch(`/api/admin/donations/${d.id}/thankyou`, { method: 'POST', body: JSON.stringify({ channel: 'email' }) })
-      toast.success('Agradecimento em fila (envio futuro)')
+      toast.success('Agradecimento em fila', { description: 'Envio futuro.' })
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível enviar.')
     }
   }
   return (
@@ -672,36 +1125,43 @@ function DonationsTab() {
       </CardHeader>
       <CardContent className="p-0">
         <div className="max-h-96 overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-muted/50 text-left">
-              <tr><th className="p-3">Data</th><th className="p-3">Valor</th><th className="p-3">Dador</th><th className="p-3">Estado</th><th className="p-3 text-right">Ações</th></tr>
-            </thead>
-            <tbody>
+          {list.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">Sem intenções registadas.</div>
+          ) : (
+            <ul className="divide-y">
               {list.map((d) => (
-                <tr key={d.id} className="border-t">
-                  <td className="p-3 text-xs text-muted-foreground">{new Date(d.createdAt).toLocaleString('pt')}</td>
-                  <td className="p-3"><Badge variant="secondary">{d.currency}</Badge> {d.amount ?? '—'}</td>
-                  <td className="p-3"><div className="font-medium">{d.donorName ?? '—'}</div><div className="text-xs text-muted-foreground">{d.donorEmail ?? ''}</div></td>
-                  <td className="p-3"><Badge variant={d.confirmed ? 'default' : 'secondary'}>{d.status}</Badge></td>
-                  <td className="p-3 text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="outline" onClick={() => patch(d, { confirmed: true, status: 'confirmed' })}>Confirmar</Button>
-                      <Button size="sm" variant="outline" onClick={() => patch(d, { confirmed: false, status: 'rejected' })}>Rejeitar</Button>
-                      <Button size="sm" variant="ghost" onClick={() => sendThanks(d)} title="Enviar agradecimento (requer consentimento)">Agradecer</Button>
+                <li key={d.id} className="flex flex-wrap items-center gap-3 p-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">{d.currency}</Badge>
+                      <span className="font-medium">{d.amount ?? '—'}</span>
+                      <Badge variant={d.confirmed ? 'default' : 'secondary'}>{d.status}</Badge>
                     </div>
-                  </td>
-                </tr>
+                    <div className="mt-1 text-sm">
+                      <div className="font-medium">{d.donorName ?? '—'}</div>
+                      <div className="text-xs text-muted-foreground">{d.donorEmail ?? ''}</div>
+                      {d.message && <p className="mt-1 text-xs text-muted-foreground">{d.message}</p>}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{new Date(d.createdAt).toLocaleString('pt')}</div>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-1">
+                    <Button size="sm" variant="outline" onClick={() => patch(d, { confirmed: true, status: 'confirmed' })}>Confirmar</Button>
+                    <Button size="sm" variant="outline" onClick={() => patch(d, { confirmed: false, status: 'rejected' })}>Rejeitar</Button>
+                    <Button size="sm" variant="ghost" onClick={() => sendThanks(d)} title="Enviar agradecimento (requer consentimento)">Agradecer</Button>
+                  </div>
+                </li>
               ))}
-              {list.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">Sem intenções registadas.</td></tr>}
-            </tbody>
-          </table>
+            </ul>
+          )}
         </div>
       </CardContent>
     </Card>
   )
 }
 
-// ---------- Templates tab ----------
+// ============================================================
+// Templates tab — preserved
+// ============================================================
 type Template = {
   id: string
   channel: string
@@ -725,7 +1185,7 @@ function TemplatesTab() {
       setForm({ channel: 'email', subject: '', body: '' })
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível criar.')
     } finally {
       setCreating(false)
     }
@@ -737,7 +1197,7 @@ function TemplatesTab() {
       toast.success('Eliminado')
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível eliminar.')
     }
   }
 
@@ -749,7 +1209,7 @@ function TemplatesTab() {
         <CardHeader><CardTitle className="text-lg">Novo modelo de agradecimento</CardTitle></CardHeader>
         <CardContent>
           <form onSubmit={create} className="grid gap-3">
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-2"><Label>Canal</Label>
                 <Select value={form.channel} onValueChange={(v) => setForm((f) => ({ ...f, channel: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -759,7 +1219,9 @@ function TemplatesTab() {
               <div className="grid gap-2"><Label>Assunto (e-mail)</Label><Input value={form.subject} onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))} /></div>
             </div>
             <div className="grid gap-2"><Label>Texto</Label><Textarea rows={3} value={form.body} onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))} required /></div>
-            <Button type="submit" disabled={creating} className="w-full sm:w-auto">{creating ? 'A criar…' : 'Criar modelo'}</Button>
+            <Button type="submit" disabled={creating} className="w-full sm:w-auto">
+              {creating ? <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> A criar…</> : 'Criar modelo'}
+            </Button>
           </form>
         </CardContent>
       </Card>
@@ -783,7 +1245,9 @@ function TemplatesTab() {
   )
 }
 
-// ---------- Channels tab ----------
+// ============================================================
+// Channels tab — preserved
+// ============================================================
 type Channel = {
   id: string
   type: string
@@ -803,7 +1267,7 @@ function ChannelsTab() {
       toast.success('Canal atualizado')
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erro')
+      toast.error(e instanceof Error ? e.message : 'Não foi possível atualizar.')
     }
   }
   return (
@@ -834,7 +1298,9 @@ function ChannelsTab() {
   )
 }
 
-// ---------- Audit tab ----------
+// ============================================================
+// Audit tab — preserved
+// ============================================================
 type Log = { id: string; actor: string; action: string; entity: string | null; entityId: string | null; detail: string | null; createdAt: string }
 function AuditTab() {
   const { data, loading } = useAdmin<{ logs: Log[] }>('/api/admin/audit')
@@ -846,22 +1312,22 @@ function AuditTab() {
         <CardDescription>Últimas 200 ações sensíveis (apenas leitura).</CardDescription></CardHeader>
       <CardContent className="p-0">
         <div className="max-h-[28rem] overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-muted/50 text-left">
-              <tr><th className="p-3">Data</th><th className="p-3">Ator</th><th className="p-3">Ação</th><th className="p-3">Detalhe</th></tr>
-            </thead>
-            <tbody>
+          {list.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">Sem registos.</div>
+          ) : (
+            <ul className="divide-y">
               {list.map((l) => (
-                <tr key={l.id} className="border-t">
-                  <td className="p-3 text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleString('pt')}</td>
-                  <td className="p-3">{l.actor}</td>
-                  <td className="p-3 font-mono text-xs">{l.action}</td>
-                  <td className="p-3 text-xs text-muted-foreground">{l.detail ?? '—'}</td>
-                </tr>
+                <li key={l.id} className="grid gap-1 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">{l.action}</Badge>
+                    <span className="text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleString('pt')}</span>
+                  </div>
+                  <div className="text-sm">{l.detail ?? '—'}</div>
+                  <div className="text-xs text-muted-foreground">por {l.actor}</div>
+                </li>
               ))}
-              {list.length === 0 && <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">Sem registos.</td></tr>}
-            </tbody>
-          </table>
+            </ul>
+          )}
         </div>
       </CardContent>
     </Card>

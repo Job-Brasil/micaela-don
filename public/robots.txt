@@ -1,3 +1,4 @@
+# robots.txt — Um Gesto de Apoio
 User-agent: Googlebot
 Allow: /
 
@@ -12,3 +13,5 @@ Allow: /
 
 User-agent: *
 Allow: /
+
+Sitemap: https://micaela-don.vercel.app/sitemap.xml
