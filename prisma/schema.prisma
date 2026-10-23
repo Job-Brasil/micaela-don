@@ -5,18 +5,18 @@
 //
 // This model is mirrored 1:1 in supabase/schema.sql + supabase/rls.sql.
 // Status/type fields are String (not enums) validated server-side with zod.
+//
+// IMPORTANT: @@map and @map directives map Prisma's CamelCase model/field names
+// to the snake_case table/column names used in supabase/schema.sql. Without these,
+// Prisma looks for "SiteSetting" but the table is "site_setting" → P2021 error.
 
 generator client {
   provider = "prisma-client-js"
-  // Output is the default location; Vercel's postinstall runs `prisma generate`.
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  // Supabase uses PgBouncer in transaction mode on port 6543.
-  // The DATABASE_URL must include: ?pgbouncer=true&connection_limit=1
-  // directUrl is the direct (non-pooled) connection on port 5432, used by migrations.
   directUrl = env("DIRECT_DATABASE_URL")
 }
 
@@ -24,7 +24,9 @@ datasource db {
 model SiteSetting {
   key       String   @id
   value     String
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("site_setting")
 }
 
 /// EUR bank transfer configuration. NEVER published until verified + approved by admin.
@@ -36,137 +38,134 @@ model PaymentConfig {
   iban         String
   bic          String?
   method       String    @default("SEPA transfer")
-  /// Admin must explicitly publish. Public API returns this only when published && approved.
   published    Boolean   @default(false)
-  /// Admin must explicitly verify & approve after reviewing real bank data.
   approved     Boolean   @default(false)
-  approvedById String?
-  approvedAt   DateTime?
+  approvedById String?   @map("approved_by_id")
+  approvedAt   DateTime? @map("approved_at")
   notes        String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("payment_config")
 }
 
 /// PIX (BRL) configuration. QR image is private until approved + published.
 model PixConfig {
   id              String   @id @default(cuid())
-  /// Base64-encoded QR image data, stored server-side only.
-  /// NEVER served publicly unless approved && published.
-  qrImageData     String?
-  qrImageMime     String?
-  beneficiaryName String?
-  /// Set true only after admin confirms the QR is legible and matches the recipient.
+  qrImageData     String? @map("qr_image_data")
+  qrImageMime     String? @map("qr_image_mime")
+  beneficiaryName String? @map("beneficiary_name")
   approved        Boolean  @default(false)
-  approvedById    String?
-  approvedAt      DateTime?
-  /// Set true to expose the QR on the public page.
+  approvedById    String?  @map("approved_by_id")
+  approvedAt      DateTime? @map("approved_at")
   published       Boolean  @default(false)
   notes           String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("pix_config")
 }
 
 /// A donation INTENT. Submitting the form is NOT proof of payment.
-/// Confirmation is administrative or via a validated payment integration.
 model DonationIntent {
   id            String   @id @default(cuid())
   currency      String
   amount        Float?
-  donorName     String?
-  donorEmail    String?
+  donorName     String?  @map("donor_name")
+  donorEmail    String?  @map("donor_email")
   message       String?
-  /// received | under_review | confirmed | rejected
   status        String   @default("received")
   confirmed     Boolean  @default(false)
-  confirmedAt   DateTime?
-  confirmedById String?
+  confirmedAt   DateTime? @map("confirmed_at")
+  confirmedById String?  @map("confirmed_by_id")
   ip            String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
   @@index([createdAt])
   @@index([status])
+  @@map("donation_intent")
 }
 
 /// Campaign material catalog. Only approved && published appear on the public page.
 model CampaignMaterial {
   id           String   @id @default(cuid())
   name         String
-  /// foto | video | documento | logo | audio | outro
   category     String
   type         String
   url          String
   source       String   @default("google_drive")
   published    Boolean  @default(false)
   approved     Boolean  @default(false)
-  approvedById String?
-  approvedAt   DateTime?
+  approvedById String?  @map("approved_by_id")
+  approvedAt   DateTime? @map("approved_at")
   notes        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([approved, published])
+  @@map("campaign_material")
 }
 
 /// Editable thank-you message templates per channel.
 model ThankYouTemplate {
   id        String   @id @default(cuid())
-  /// whatsapp | email
   channel   String
   language  String   @default("pt")
   subject   String?
   body      String
   active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("thank_you_template")
 }
 
 /// Contact channels. WhatsApp is DISABLED by default and never shown unless enabled+published.
 model ContactChannel {
   id        String   @id @default(cuid())
-  /// whatsapp | email
   type      String
   label     String
   value     String
   enabled   Boolean  @default(false)
   published Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("contact_channel")
 }
 
 /// Explicit, recorded consent per channel. No outbound message without a valid consent.
 model ConsentRecord {
   id         String   @id @default(cuid())
-  donorEmail String?
-  donorName  String?
-  /// whatsapp | email
+  donorEmail String?  @map("donor_email")
+  donorName  String?  @map("donor_name")
   channel    String
   consent    Boolean
   ip         String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime @default(now()) @map("created_at")
 
   @@index([channel, donorEmail])
+  @@map("consent_record")
 }
 
 /// Outbound thank-you messages (future WhatsApp Business / email integration).
-/// Built now to track status, attempts, errors, cancellation, and prevent duplicates.
 model OutboundMessage {
   id                String   @id @default(cuid())
-  toAddress         String
-  /// whatsapp | email
+  toAddress         String   @map("to_address")
   channel           String
-  templateId        String?
-  /// pending | queued | sent | failed | cancelled
+  templateId        String?  @map("template_id")
   status            String   @default("pending")
   attempts          Int      @default(0)
-  lastError         String?
-  donationIntentId  String?
-  sentAt            DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  lastError         String?  @map("last_error")
+  donationIntentId  String?  @map("donation_intent_id")
+  sentAt            DateTime? @map("sent_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@unique([channel, toAddress, donationIntentId])
   @@index([status])
+  @@map("outbound_message")
 }
 
 /// Append-only audit trail for every sensitive action.
@@ -175,10 +174,11 @@ model AuditLog {
   actor     String
   action    String
   entity    String?
-  entityId  String?
+  entityId  String?  @map("entity_id")
   detail    String?
   ip        String?
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([createdAt])
+  @@map("audit_log")
 }
