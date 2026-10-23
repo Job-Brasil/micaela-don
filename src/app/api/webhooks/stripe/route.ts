@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { verifyStripeWebhook } from '@/lib/providers/stripe'
 import { hashPayload } from '@/lib/payments/webhook'
 import { audit } from '@/lib/audit'
+import { fulfillPayment } from '@/lib/notifications/fulfillment'
 
 /**
  * Stripe webhook — validates signature over raw body, processes events idempotently.
@@ -139,7 +140,8 @@ async function processStripeEvent(event: { type: string; data: { object: Record<
           entityId: order.id,
           detail: `provider=stripe method=mbway amount=${order.amount}`,
         })
-        // TODO (ETAPA F): trigger email + delivery after payment confirmed
+        // Trigger email + delivery (idempotent)
+        await fulfillPayment(order.id)
       } else {
         // Still pending payment (e.g. MB WAY pending confirmation)
         await db.paymentOrder.update({
@@ -164,7 +166,8 @@ async function processStripeEvent(event: { type: string; data: { object: Record<
           entityId: order.id,
           detail: `event=payment_intent.succeeded`,
         })
-        // TODO (ETAPA F): trigger email + delivery
+        // Trigger email + delivery (idempotent)
+        await fulfillPayment(order.id)
       }
       break
     }

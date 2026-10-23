@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { verifyPixGoSignature, isTimestampWithinTolerance, hashPayload } from '@/lib/payments/webhook'
 import { audit } from '@/lib/audit'
+import { fulfillPayment } from '@/lib/notifications/fulfillment'
 
 /**
  * PixGo webhook — validates HMAC-SHA256 signature, processes events idempotently.
@@ -166,7 +167,8 @@ async function processPixGoEvent(
           entityId: orderId,
           detail: `provider=pixgo method=pix_automatic amount=${order.amount}`,
         })
-        // TODO (ETAPA F): trigger email + delivery
+        // Trigger email + delivery (idempotent)
+        await fulfillPayment(orderId)
       }
       break
     }
