@@ -76,6 +76,11 @@ create policy "anon insert consent_record"
 -- role key on the server only.
 
 -- Optional: a SECURITY DEFINER function to read published PIX metadata (no bytes).
+-- Returns ONLY: availability flag, beneficiary name, and the controlled server URL.
+-- The actual QR image bytes are NEVER returned here; they are served by the server
+-- endpoint /api/public/pix-qr which re-checks approved && published && qr_image_data.
+-- All three fields are gated on (approved AND published AND qr_image_data IS NOT NULL)
+-- so no metadata leaks before the QR is fully verified and published.
 create or replace function public.get_published_pix()
 returns table (
   available boolean,
@@ -85,7 +90,7 @@ returns table (
 language sql security definer set search_path = public as $$
   select
     case when (approved and published and qr_image_data is not null) then true else false end,
-    case when (approved and published) then beneficiary_name else null end,
+    case when (approved and published and qr_image_data is not null) then beneficiary_name else null end,
     case when (approved and published and qr_image_data is not null)
          then '/api/public/pix-qr' else null end
   from pix_config
@@ -93,5 +98,9 @@ language sql security definer set search_path = public as $$
   limit 1;
 $$;
 
+-- pix_config has NO anon SELECT policy (above), so anon cannot read the table directly.
+-- Revoke all table privileges from anon/authenticated as defence-in-depth; the app uses
+-- Prisma (postgres superuser) which bypasses RLS, so it does not need these grants.
 revoke all on pix_config from anon, authenticated;
+-- Grant only EXECUTE on the metadata function (returns no image bytes).
 grant execute on function public.get_published_pix() to anon, authenticated;
