@@ -49,11 +49,6 @@ export type PublicSite = {
   contactChannels: { type: string; label: string; value: string }[]
 }
 
-/**
- * Resolves a cover image reference to a URL.
- * - If it starts with "asset:", it's a SiteAsset id → /api/public/asset/[id]
- * - Otherwise it's treated as an external URL
- */
 function resolveImageRef(ref: string | null | undefined): string | null {
   if (!ref) return null
   if (ref.startsWith('asset:')) {
@@ -63,91 +58,49 @@ function resolveImageRef(ref: string | null | undefined): string | null {
 }
 
 /**
- * Checks whether the campaign_id column exists on a table by attempting a query.
- * If it fails with P2021 (table/column missing), the migration B hasn't been
- * applied yet and we fall back to unscoped queries (backward compatible with
- * the pre-multi-campanha production schema).
- *
- * This makes the app resilient: it works immediately after deploy, even before
- * the Supabase migration is applied manually.
- */
-async function hasCampaignId(tableName: 'site_setting' | 'payment_config' | 'pix_config' | 'campaign_material' | 'contact_channel'): Promise<boolean> {
-  try {
-    // Try a minimal query selecting campaign_id; if the column doesn't exist,
-    // Prisma throws P2021.
-    await db.$queryRawUnsafe(`SELECT campaign_id FROM ${tableName} LIMIT 0`)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Checks whether the campaign table exists.
- */
-async function hasCampaignTable(): Promise<boolean> {
-  try {
-    await db.$queryRawUnsafe(`SELECT id FROM campaign LIMIT 0`)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * The single source of truth for what a visitor may see for a given campaign.
+ * The single source of truth for what a visitor may see.
  * Returns ONLY published + approved data. Private data never leaves here.
  *
- * Resilient: if the multi-campanha migration (campaign table / campaign_id columns)
- * hasn't been applied to the production DB yet, falls back to unscoped queries
- * (returns all published data, which for the Micaela-only DB is correct).
- *
- * @param campaignId - defaults to 'micaela' (the default campaign served at "/")
+ * Resilient to schema state: if the multi-campanha / V2 migration hasn't been
+ * applied to the production DB, falls back to raw SQL selecting only the
+ * columns that exist in the original schema. This allows the app to work
+ * immediately after deploy, before the manual SQL migration is applied.
  */
-export async function getPublicSite(campaignId: string = 'micaela'): Promise<PublicSite> {
+export async function getPublicSite(_campaignId: string = 'micaela'): Promise<PublicSite> {
   try {
-    // Check if the multi-campanha schema is applied
-    const [hasCampaign, hasCampaignIdCol] = await Promise.all([
-      hasCampaignTable(),
-      hasCampaignId('site_setting'),
-    ])
-    const isMultiCampaign = hasCampaign && hasCampaignIdCol
+    // Try the Prisma (typed) path first — works if schema is fully applied.
+    const campaign = await db.campaign.findUnique({ where: { id: _campaignId } }).catch(() => null)
+    const settings = await db.siteSetting.findMany({ where: { campaignId: _campaignId } }).catch(async () =>
+      // Fallback: unscoped (pre-migration) — campaign_id column may not exist
+      db.siteSetting.findMany().catch(() => []),
+    )
+    const payment = await db.paymentConfig
+      .findFirst({ where: { campaignId: _campaignId }, orderBy: { updatedAt: 'desc' } })
+      .catch(async () =>
+        db.paymentConfig.findFirst({ orderBy: { updatedAt: 'desc' } }).catch(() => null),
+      )
+    const pix = await db.pixConfig
+      .findFirst({ where: { campaignId: _campaignId }, orderBy: { updatedAt: 'desc' } })
+      .catch(async () =>
+        db.pixConfig.findFirst({ orderBy: { updatedAt: 'desc' } }).catch(() => null),
+      )
+    const materials = await db.campaignMaterial
+      .findMany({ where: { campaignId: _campaignId, approved: true, published: true }, orderBy: { createdAt: 'desc' } })
+      .catch(async () =>
+        db.campaignMaterial.findMany({ where: { approved: true, published: true }, orderBy: { createdAt: 'desc' } }).catch(async () => {
+          // Last resort: raw SQL selecting only columns that exist in original schema
+          return db.$queryRawUnsafe(
+            `SELECT id, name, category, type, url, source FROM campaign_material WHERE approved = true AND published = true ORDER BY created_at DESC`,
+          ) as Promise<Array<{ id: string; name: string; category: string; type: string; url: string; source: string }>>
+        }),
+      )
+    const channels = await db.contactChannel
+      .findMany({ where: { campaignId: _campaignId, enabled: true, published: true } })
+      .catch(async () =>
+        db.contactChannel.findMany({ where: { enabled: true, published: true } }).catch(() => []),
+      )
 
-    // Run queries SEQUENTIALLY (PgBouncer connection_limit=1).
-    type CampaignType = NonNullable<Awaited<ReturnType<typeof db.campaign.findUnique>>>
-    let campaign: CampaignType | null = null
-    if (isMultiCampaign) {
-      campaign = await db.campaign.findUnique({ where: { id: campaignId } })
-    }
-
-    // For queries with campaignId filter: only apply if multi-campaign schema exists.
-    // Otherwise, query without the filter (returns all published data).
-    const settingsWhere = isMultiCampaign ? { campaignId } : {}
-    const paymentWhere = isMultiCampaign ? { campaignId } : {}
-    const pixWhere = isMultiCampaign ? { campaignId } : {}
-    const materialsWhere = isMultiCampaign
-      ? { campaignId, approved: true, published: true }
-      : { approved: true, published: true }
-    const channelsWhere = isMultiCampaign
-      ? { campaignId, enabled: true, published: true }
-      : { enabled: true, published: true }
-
-    const settings = await db.siteSetting.findMany({ where: settingsWhere as never })
-    const payment = await db.paymentConfig.findFirst({
-      where: paymentWhere as never,
-      orderBy: { updatedAt: 'desc' },
-    })
-    const pix = await db.pixConfig.findFirst({
-      where: pixWhere as never,
-      orderBy: { updatedAt: 'desc' },
-    })
-    const materials = await db.campaignMaterial.findMany({
-      where: materialsWhere as never,
-      orderBy: { createdAt: 'desc' },
-    })
-    const channels = await db.contactChannel.findMany({ where: channelsWhere as never })
-
-    const settingsMap = settings.reduce<Record<string, string>>((acc, s) => {
+    const settingsMap = (settings as Array<{ key: string; value: string }>).reduce<Record<string, string>>((acc, s) => {
       acc[s.key] = s.value
       return acc
     }, {})
@@ -177,10 +130,7 @@ export async function getPublicSite(campaignId: string = 'micaela'): Promise<Pub
             seoDescription: campaign.seoDescription,
             canonicalUrl: campaign.canonicalUrl,
           }
-        : // Fallback: if multi-campaign not active, synthesize a minimal campaign object
-          isMultiCampaign
-          ? null
-          : { id: 'micaela', slug: 'micaela', name: 'A história da Micaela', currency: 'EUR', country: 'PT', seoTitle: null, seoDescription: null, canonicalUrl: null },
+        : { id: 'micaela', slug: 'micaela', name: 'A história da Micaela', currency: 'EUR', country: 'PT', seoTitle: null, seoDescription: null, canonicalUrl: null },
       settings: settingsMap,
       hero,
       payment: showPayment
@@ -201,18 +151,22 @@ export async function getPublicSite(campaignId: string = 'micaela'): Promise<Pub
         beneficiaryName: showPix ? pix!.beneficiaryName ?? null : null,
         qrUrl: showPix ? '/api/public/pix-qr' : null,
       },
-      materials: materials.map((m) => ({
-        id: m.id,
-        name: m.name,
-        category: m.category,
-        type: m.type,
-        url: m.url,
-        source: m.source,
-        coverImage: resolveImageRef(m.coverImageRef),
-        coverAlt: m.coverAlt ?? null,
-        description: m.description ?? null,
+      materials: (materials as Array<Record<string, unknown>>).map((m) => ({
+        id: String(m.id),
+        name: String(m.name ?? ''),
+        category: String(m.category ?? ''),
+        type: String(m.type ?? ''),
+        url: String(m.url ?? ''),
+        source: String(m.source ?? 'google_drive'),
+        coverImage: resolveImageRef((m.coverImageRef ?? m.cover_image_ref) as string | null | undefined),
+        coverAlt: ((m.coverAlt ?? m.cover_alt) as string | null) ?? null,
+        description: (m.description as string | null) ?? null,
       })),
-      contactChannels: channels.map((c) => ({ type: c.type, label: c.label, value: c.value })),
+      contactChannels: (channels as Array<{ type: string; label: string; value: string }>).map((c) => ({
+        type: c.type,
+        label: c.label,
+        value: c.value,
+      })),
     }
   } catch (err) {
     const code = (err as { code?: string })?.code ?? 'UNKNOWN'
@@ -224,12 +178,6 @@ export async function getPublicSite(campaignId: string = 'micaela'): Promise<Pub
   }
 }
 
-/**
- * Resolve a campaign by slug. Returns the campaign id if found and published,
- * otherwise null. Used by the /{slug} dynamic route.
- *
- * Resilient: returns null if the campaign table doesn't exist (migration not applied).
- */
 export async function getCampaignIdBySlug(slug: string): Promise<string | null> {
   try {
     const campaign = await db.campaign.findUnique({
@@ -239,7 +187,6 @@ export async function getCampaignIdBySlug(slug: string): Promise<string | null> 
     if (!campaign || campaign.status !== 'published') return null
     return campaign.id
   } catch {
-    // Table doesn't exist or query failed — only the default campaign is available
     return slug === 'micaela' ? 'micaela' : null
   }
 }
