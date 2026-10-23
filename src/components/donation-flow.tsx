@@ -1,12 +1,10 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
   Heart,
   Check,
-  ChevronRight,
-  ChevronLeft,
   ShieldCheck,
   Loader2,
   Landmark,
@@ -16,6 +14,7 @@ import {
   Package,
   AlertCircle,
   ArrowRight,
+  Globe,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,6 +25,15 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  translate,
+  detectCountry,
+  detectLocale,
+  formatAmount,
+  COUNTRIES,
+  getCountry,
+  type Locale,
+} from '@/lib/i18n'
 
 type PaymentMethodsResponse = {
   methods: {
@@ -45,45 +53,66 @@ type PaymentMethodsResponse = {
   limits: Record<string, { minMinor: number; maxMinor: number }>
 }
 
-type Step = 1 | 2 | 3 | 4 | 5
+type MethodKey = 'mbway' | 'pix_automatic' | 'pix_manual' | 'bank_transfer'
 
-const COUNTRY_LABELS: Record<string, string> = {
-  PT: 'Portugal',
-  BR: 'Brasil',
-  ES: 'Espanha',
-  FR: 'França',
-  DE: 'Alemanha',
-  GB: 'Reino Unido',
-  US: 'Estados Unidos',
-  OUTRO: 'Outro país',
+const METHOD_ICONS: Record<MethodKey, typeof Landmark> = {
+  mbway: CreditCard,
+  pix_automatic: QrCode,
+  pix_manual: QrCode,
+  bank_transfer: Landmark,
 }
 
-const METHOD_LABELS: Record<string, { label: string; icon: typeof Landmark; desc: string }> = {
-  mbway: { label: 'MB WAY', icon: CreditCard, desc: 'Pagamento instantâneo via Stripe' },
-  pix_automatic: { label: 'PIX Automático', icon: QrCode, desc: 'QR Code gerado automaticamente' },
-  pix_manual: { label: 'PIX Manual', icon: QrCode, desc: 'QR Code e código Copia e Cola' },
-  bank_transfer: { label: 'Transferência Bancária', icon: Landmark, desc: 'IBAN (SEPA)' },
+const LOCALE_LABELS: Record<Locale, string> = {
+  'pt-PT': 'PT',
+  'pt-BR': 'BR',
+  en: 'EN',
 }
 
 export function DonationFlow({ campaignId, campaignName }: { campaignId: string; campaignName: string }) {
-  const [step, setStep] = useState<Step>(1)
   const [methods, setMethods] = useState<PaymentMethodsResponse | null>(null)
   const [loadingMethods, setLoadingMethods] = useState(true)
+  const [locale, setLocale] = useState<Locale>('pt-PT')
+  const [country, setCountry] = useState('PT')
 
-  // Form state
+  // Form state — all in one page
   const [currency, setCurrency] = useState<'EUR' | 'BRL'>('EUR')
   const [selectedAmount, setSelectedAmount] = useState<number | null>(null)
   const [customAmount, setCustomAmount] = useState('')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [whatsapp, setWhatsapp] = useState('')
-  const [country, setCountry] = useState('PT')
+  const [cpf, setCpf] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<string>('')
   const [wantPackMedia, setWantPackMedia] = useState(false)
   const [message, setMessage] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [result, setResult] = useState<{ id: string; paymentMethod: string; url?: string } | null>(null)
+  const [result, setResult] = useState<{
+    id: string
+    paymentMethod: string
+    status: string
+  } | null>(null)
+  const [stripeRedirectUrl, setStripeRedirectUrl] = useState<string | null>(null)
 
+  const t = useCallback((key: string, params?: Record<string, string | number>) => translate(locale, key, params), [locale])
+
+  // Init: detect locale + country
+  useEffect(() => {
+    const l = detectLocale()
+    const c = detectCountry()
+    setLocale(l)
+    setCountry(c)
+    const info = getCountry(c)
+    setCurrency(info.currency)
+  }, [])
+
+  // Persist locale choice
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ajudar.locale', locale)
+    }
+  }, [locale])
+
+  // Fetch payment methods
   useEffect(() => {
     fetch(`/api/public/payment-methods?campaignId=${encodeURIComponent(campaignId)}`)
       .then((r) => r.json())
@@ -92,17 +121,19 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
       .finally(() => setLoadingMethods(false))
   }, [campaignId])
 
-  // Auto-suggest country from Accept-Language (no geolocation)
-  useEffect(() => {
-    if (typeof navigator !== 'undefined') {
-      const lang = navigator.language || navigator.languages?.[0] || ''
-      if (lang.toLowerCase().startsWith('pt')) {
-        // Distinguish pt-PT vs pt-BR
-        if (lang.toLowerCase().includes('br')) setCountry('BR')
-        else setCountry('PT')
-      }
-    }
-  }, [])
+  const handleCountryChange = (c: string) => {
+    setCountry(c)
+    const info = getCountry(c)
+    setCurrency(info.currency)
+    setLocale(info.locale)
+    setSelectedAmount(null)
+    setCustomAmount('')
+    setPaymentMethod('')
+  }
+
+  const handleLocaleChange = (l: Locale) => {
+    setLocale(l)
+  }
 
   const amountMinor = useMemo(() => {
     if (customAmount) return Math.round(Number(customAmount) * 100)
@@ -110,38 +141,43 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
     return 0
   }, [selectedAmount, customAmount])
 
-  const amountMajor = amountMinor / 100
-  const formattedAmount = useMemo(() => {
-    return new Intl.NumberFormat(currency === 'BRL' ? 'pt-BR' : 'pt-PT', {
-      style: 'currency',
-      currency,
-    }).format(amountMajor)
-  }, [amountMajor, currency])
+  const formattedAmount = useMemo(() => formatAmount(amountMinor, currency, locale), [amountMinor, currency, locale])
 
   const limits = methods?.limits?.[currency] ?? { minMinor: 100, maxMinor: 1000000 }
   const suggested = methods?.suggestedAmounts?.[currency] ?? (currency === 'BRL' ? [20, 50, 100, 200] : [5, 10, 20, 50])
 
-  // Available methods for this currency
   const availableMethods = useMemo(() => {
     if (!methods) return []
     return Object.entries(methods.methods)
       .filter(([, info]) => info.available && info.currency === currency)
-      .map(([key, info]) => ({ key, ...info }))
+      .map(([key, info]) => ({ key: key as MethodKey, ...info }))
   }, [methods, currency])
 
-  // Auto-select currency based on country
-  const handleCountryChange = (c: string) => {
-    setCountry(c)
-    if (c === 'BR') setCurrency('BRL')
-    else setCurrency('EUR')
-  }
+  // Auto-select first available method when currency/methods change
+  useEffect(() => {
+    if (availableMethods.length > 0 && !availableMethods.find((m) => m.key === paymentMethod)) {
+      setPaymentMethod(availableMethods[0].key)
+    }
+    if (availableMethods.length === 0) {
+      setPaymentMethod('')
+    }
+  }, [availableMethods, paymentMethod])
 
-  const canProceedStep1 = amountMinor >= limits.minMinor && amountMinor <= limits.maxMinor
-  const canProceedStep2 = name.trim().length >= 2 && /\S+@\S+\.\S+/.test(email) && (!whatsapp || /^\+?\d{8,15}$/.test(whatsapp.replace(/[\s\-()]/g, '')))
-  const canProceedStep3 = !!paymentMethod
+  const symbol = currency === 'BRL' ? 'R$' : '€'
+
+  const amountValid = amountMinor >= limits.minMinor && amountMinor <= limits.maxMinor
+  const nameValid = name.trim().length >= 2
+  const emailValid = /\S+@\S+\.\S+/.test(email)
+  const whatsappValid = !whatsapp || /^\+?\d{8,15}$/.test(whatsapp.replace(/[\s\-()]/g, ''))
+  const cpfRequired = paymentMethod === 'pix_automatic'
+  const cpfValid = !cpfRequired || /^\d{11}$|^\d{14}$/.test(cpf.replace(/\D/g, ''))
+
+  const canSubmit = amountValid && nameValid && emailValid && whatsappValid && cpfValid && !!paymentMethod
 
   const submit = async () => {
+    if (!canSubmit) return
     setSubmitting(true)
+    setStripeRedirectUrl(null)
     try {
       const res = await fetch('/api/public/donation-intent', {
         method: 'POST',
@@ -163,16 +199,16 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Erro')
 
-      setResult({ id: data.id, paymentMethod: data.paymentMethod })
+      setResult({ id: data.id, paymentMethod: data.paymentMethod, status: data.status })
 
-      // If Stripe MB WAY, redirect to checkout
+      // If MB WAY, create Stripe session and redirect
       if (paymentMethod === 'mbway') {
         const stripeRes = await fetch('/api/payments/stripe/create-session', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             campaignId,
-            amount: amountMajor,
+            amount: amountMinor / 100,
             currency,
             customerEmail: email.trim(),
             customerName: name.trim(),
@@ -180,15 +216,15 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
         })
         const stripeData = await stripeRes.json()
         if (stripeData.url) {
+          // Stripe Checkout is hosted — redirect is the official flow.
+          setStripeRedirectUrl(stripeData.url)
           window.location.href = stripeData.url
           return
         }
       }
 
-      // For manual methods, show confirmation
-      toast.success('Intenção registada', {
-        description: 'Aguarde confirmação. Este formulário não comprova pagamento.',
-      })
+      // For manual methods, stay on page and show the payment area inline
+      toast.success(t('result.title'), { description: t('result.desc') })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao submeter')
     } finally {
@@ -199,491 +235,309 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   if (loadingMethods) {
     return (
       <div className="flex items-center justify-center p-8 text-muted-foreground">
-        <Loader2 className="mr-2 h-5 w-5 animate-spin" /> A preparar métodos de pagamento…
+        <Loader2 className="mr-2 h-5 w-5 animate-spin" /> A preparar…
       </div>
     )
   }
 
+  // If redirected to Stripe, show loading state
+  if (stripeRedirectUrl) {
+    return (
+      <Card className="border-stone-200/70 dark:border-stone-800/70">
+        <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-rose-600" />
+          <p className="text-sm font-medium">A redirecionar para o Stripe…</p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Result view for manual methods (PIX manual, IBAN)
   if (result && (result.paymentMethod === 'pix_manual' || result.paymentMethod === 'bank_transfer')) {
-    return <ManualPaymentResult result={result} methods={methods} paymentMethod={result.paymentMethod} campaignName={campaignName} />
+    return (
+      <ManualPaymentResult
+        result={result}
+        methods={methods}
+        campaignName={campaignName}
+        locale={locale}
+        t={t}
+      />
+    )
   }
 
   return (
     <Card className="overflow-hidden border-stone-200/70 shadow-sm dark:border-stone-800/70">
-      <CardHeader className="border-b bg-gradient-to-r from-rose-50 to-amber-50/50 pb-4 dark:from-rose-950/20 dark:to-amber-950/10">
-        <div className="flex items-center justify-between">
+      <CardHeader className="border-b bg-gradient-to-r from-rose-50 to-amber-50/50 pb-5 dark:from-rose-950/20 dark:to-amber-950/10">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle className="flex items-center gap-2 text-lg">
               <Heart className="h-5 w-5 text-rose-600" />
-              Apoiar esta campanha
+              {t('donate.title')}
             </CardTitle>
-            <CardDescription className="mt-1">{campaignName}</CardDescription>
+            <CardDescription className="mt-1">
+              {campaignName} — {t('donate.context')}
+            </CardDescription>
           </div>
-          <StepIndicator step={step} />
+          {/* Country + locale selectors */}
+          <div className="flex items-center gap-2">
+            <Select value={country} onValueChange={handleCountryChange}>
+              <SelectTrigger className="h-9 w-auto gap-1.5" aria-label={t('donate.country')}>
+                <span className="text-base leading-none">{getCountry(country).flag}</span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {COUNTRIES.map((c) => (
+                  <SelectItem key={c.code} value={c.code}>
+                    <span className="mr-1.5">{c.flag}</span> {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={locale} onValueChange={(v) => handleLocaleChange(v as Locale)}>
+              <SelectTrigger className="h-9 w-16" aria-label="Language">
+                <Globe className="h-3.5 w-3.5" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pt-PT">🇵🇹 PT</SelectItem>
+                <SelectItem value="pt-BR">🇧🇷 BR</SelectItem>
+                <SelectItem value="en">🇬🇧 EN</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </CardHeader>
 
-      <CardContent className="p-6">
-        {step === 1 && (
-          <Step1Value
-            currency={currency}
-            setCurrency={setCurrency}
-            selectedAmount={selectedAmount}
-            setSelectedAmount={setSelectedAmount}
-            customAmount={customAmount}
-            setCustomAmount={setCustomAmount}
-            suggested={suggested}
-            limits={limits}
-            formattedAmount={formattedAmount}
-            canProceed={canProceedStep1}
-            onNext={() => setStep(2)}
-          />
-        )}
+      <CardContent className="space-y-6 p-6">
+        {/* Value selection */}
+        <section>
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {t('donate.amount')}
+          </Label>
+          <div className="mb-3 flex gap-2">
+            <Button
+              type="button"
+              variant={currency === 'EUR' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => { setCurrency('EUR'); setSelectedAmount(null); setCustomAmount('') }}
+            >
+              € EUR
+            </Button>
+            <Button
+              type="button"
+              variant={currency === 'BRL' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => { setCurrency('BRL'); setSelectedAmount(null); setCustomAmount('') }}
+            >
+              R$ BRL
+            </Button>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {suggested.map((amt) => (
+              <button
+                key={amt}
+                type="button"
+                onClick={() => { setSelectedAmount(amt); setCustomAmount('') }}
+                className={`relative rounded-xl border-2 p-3 text-center transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10 ${
+                  selectedAmount === amt && !customAmount
+                    ? 'border-rose-600 bg-rose-50 dark:bg-rose-950/20'
+                    : 'border-stone-200 dark:border-stone-800'
+                }`}
+              >
+                {selectedAmount === amt && !customAmount && (
+                  <Check className="absolute right-1.5 top-1.5 h-3.5 w-3.5 text-rose-600" />
+                )}
+                <span className="text-base font-bold">{symbol} {amt}</span>
+              </button>
+            ))}
+          </div>
+          <div className="mt-3">
+            <Label htmlFor="custom-amount" className="mb-1 block text-xs text-muted-foreground">
+              {t('donate.custom')}
+            </Label>
+            <div className="relative max-w-[200px]">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">{symbol}</span>
+              <Input
+                id="custom-amount"
+                type="number"
+                min={(limits.minMinor / 100).toFixed(2)}
+                max={(limits.maxMinor / 100).toFixed(2)}
+                step="0.01"
+                value={customAmount}
+                onChange={(e) => { setCustomAmount(e.target.value); setSelectedAmount(null) }}
+                placeholder="0.00"
+                className="pl-8"
+              />
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('donate.minMax', { min: `${symbol}${(limits.minMinor / 100).toFixed(2)}`, max: `${symbol}${(limits.maxMinor / 100).toFixed(2)}` })}
+            </p>
+          </div>
+          {amountValid && amountMinor > 0 && (
+            <div className="mt-3 inline-flex items-center gap-2 rounded-lg bg-rose-50 px-3 py-1.5 text-sm dark:bg-rose-950/20">
+              <span className="text-muted-foreground">{t('donate.summary.amount')}:</span>
+              <span className="font-bold text-rose-700 dark:text-rose-400">{formattedAmount}</span>
+            </div>
+          )}
+        </section>
 
-        {step === 2 && (
-          <Step2Donor
-            name={name} setName={setName}
-            email={email} setEmail={setEmail}
-            whatsapp={whatsapp} setWhatsapp={setWhatsapp}
-            country={country} setCountry={handleCountryChange}
-            message={message} setMessage={setMessage}
-            canProceed={canProceedStep2}
-            onBack={() => setStep(1)}
-            onNext={() => setStep(3)}
-          />
-        )}
+        <Separator />
 
-        {step === 3 && (
-          <Step3Method
-            currency={currency}
-            availableMethods={availableMethods}
-            paymentMethod={paymentMethod}
-            setPaymentMethod={setPaymentMethod}
-            canProceed={canProceedStep3}
-            onBack={() => setStep(2)}
-            onNext={() => setStep(4)}
-          />
-        )}
+        {/* Donor data */}
+        <section className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-1.5">
+            <Label htmlFor="d-name">{t('donate.name')} *</Label>
+            <Input id="d-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} placeholder={t('donate.name')} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="d-email">{t('donate.email')} *</Label>
+            <Input id="d-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={160} placeholder="email@exemplo.com" />
+            <p className="text-xs text-muted-foreground">{t('donate.email.hint')}</p>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="d-whats">{t('donate.whatsapp')}</Label>
+            <Input id="d-whats" type="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} maxLength={40} placeholder="+351 912 345 678" />
+          </div>
+          {cpfRequired && (
+            <div className="grid gap-1.5">
+              <Label htmlFor="d-cpf">{t('donate.cpf')}</Label>
+              <Input id="d-cpf" value={cpf} onChange={(e) => setCpf(e.target.value)} maxLength={18} placeholder="000.000.000-00" />
+            </div>
+          )}
+        </section>
 
-        {step === 4 && (
-          <Step4PackMedia
-            wantPackMedia={wantPackMedia}
-            setWantPackMedia={setWantPackMedia}
-            hasMaterials={false}
-            onBack={() => setStep(3)}
-            onNext={() => setStep(5)}
-          />
-        )}
+        <Separator />
 
-        {step === 5 && (
-          <Step5Summary
-            campaignName={campaignName}
-            formattedAmount={formattedAmount}
-            currency={currency}
-            paymentMethod={paymentMethod}
-            name={name}
-            email={email}
-            wantPackMedia={wantPackMedia}
-            submitting={submitting}
-            onBack={() => setStep(4)}
-            onSubmit={submit}
-          />
-        )}
+        {/* Payment method */}
+        <section>
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {t('donate.method')}
+          </Label>
+          {availableMethods.length === 0 ? (
+            <div className="flex items-start gap-3 rounded-lg bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+              <div>
+                <p className="font-medium">{t('donate.method.none')}</p>
+                <p className="mt-0.5 text-xs">{t('donate.method.none.hint')}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {availableMethods.map((m) => {
+                const Icon = METHOD_ICONS[m.key] ?? CreditCard
+                const label = translate(locale, `method.${m.key}`)
+                const desc = translate(locale, `method.${m.key}.desc`)
+                return (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setPaymentMethod(m.key)}
+                    className={`flex items-center gap-3 rounded-xl border-2 p-3 text-left transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10 ${
+                      paymentMethod === m.key
+                        ? 'border-rose-600 bg-rose-50 dark:bg-rose-950/20'
+                        : 'border-stone-200 dark:border-stone-800'
+                    }`}
+                  >
+                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                      paymentMethod === m.key ? 'bg-rose-600 text-white' : 'bg-muted text-muted-foreground'
+                    }`}>
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-semibold">{label}</span>
+                        {m.key === 'pix_manual' && <Badge variant="secondary" className="text-[10px] px-1.5">Manual</Badge>}
+                        {m.key === 'bank_transfer' && <Badge variant="secondary" className="text-[10px] px-1.5">SEPA</Badge>}
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">{desc}</p>
+                    </div>
+                    {paymentMethod === m.key && <Check className="h-4 w-4 shrink-0 text-rose-600" />}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </section>
+
+        <Separator />
+
+        {/* Pack Media */}
+        <section>
+          <label className="flex cursor-pointer items-start gap-3 rounded-xl border-2 p-4 transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10">
+            <Checkbox
+              checked={wantPackMedia}
+              onCheckedChange={(v) => setWantPackMedia(v === true)}
+              className="mt-0.5"
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <Package className="h-4 w-4 text-rose-600" />
+                <span className="text-sm font-semibold">{t('donate.pack')}</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{t('donate.pack.hint')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('donate.pack.note')}</p>
+            </div>
+          </label>
+        </section>
+
+        <Separator />
+
+        {/* Summary + Submit */}
+        <section>
+          <div className="mb-4 rounded-xl border bg-muted/30 p-4">
+            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
+              <SummaryRow label={t('donate.summary.amount')} value={formattedAmount} />
+              <SummaryRow label={t('donate.summary.method')} value={paymentMethod ? translate(locale, `method.${paymentMethod}`) : '—'} />
+              <SummaryRow label={t('donate.summary.pack')} value={wantPackMedia ? t('donate.yes') : t('donate.no')} />
+            </div>
+          </div>
+          <div className="mb-4 flex items-start gap-2 rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{t('donate.confirm.security')}</span>
+          </div>
+          <Button onClick={submit} disabled={!canSubmit || submitting} className="w-full gap-2 sm:w-auto" size="lg">
+            {submitting ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> {t('donate.submitting')}</>
+            ) : (
+              <>{t('donate.submit')} <ArrowRight className="h-4 w-4" /></>
+            )}
+          </Button>
+        </section>
       </CardContent>
     </Card>
   )
 }
 
-function StepIndicator({ step }: { step: Step }) {
-  return (
-    <div className="flex items-center gap-1.5" aria-label={`Etapa ${step} de 5`}>
-      {[1, 2, 3, 4, 5].map((n) => (
-        <div
-          key={n}
-          className={`h-2 w-2 rounded-full transition-colors ${
-            n <= step ? 'bg-rose-600' : 'bg-muted-foreground/30'
-          }`}
-        />
-      ))}
-    </div>
-  )
-}
-
-function StepHeader({ n, title, desc }: { n: number; title: string; desc: string }) {
-  return (
-    <div className="mb-6">
-      <Badge variant="secondary" className="mb-2 gap-1">
-        Etapa {n}
-      </Badge>
-      <h3 className="text-lg font-semibold tracking-tight">{title}</h3>
-      <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-    </div>
-  )
-}
-
-function Step1Value({
-  currency, setCurrency, selectedAmount, setSelectedAmount, customAmount, setCustomAmount,
-  suggested, limits, formattedAmount, canProceed, onNext,
-}: {
-  currency: string
-  setCurrency: (c: 'EUR' | 'BRL') => void
-  selectedAmount: number | null
-  setSelectedAmount: (n: number | null) => void
-  customAmount: string
-  setCustomAmount: (s: string) => void
-  suggested: number[]
-  limits: { minMinor: number; maxMinor: number }
-  formattedAmount: string
-  canProceed: boolean
-  onNext: () => void
-}) {
-  const symbol = currency === 'BRL' ? 'R$' : '€'
-  return (
-    <div>
-      <StepHeader n={1} title="Escolha o valor" desc="Selecione um valor sugerido ou introduza um valor personalizado." />
-      <div className="mb-4">
-        <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">Moeda</Label>
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            variant={currency === 'EUR' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => { setCurrency('EUR'); setSelectedAmount(null); setCustomAmount('') }}
-          >
-            € EUR
-          </Button>
-          <Button
-            type="button"
-            variant={currency === 'BRL' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => { setCurrency('BRL'); setSelectedAmount(null); setCustomAmount('') }}
-          >
-            R$ BRL
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {suggested.map((amt) => (
-          <button
-            key={amt}
-            type="button"
-            onClick={() => { setSelectedAmount(amt); setCustomAmount('') }}
-            className={`relative rounded-xl border-2 p-4 text-center transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10 ${
-              selectedAmount === amt && !customAmount
-                ? 'border-rose-600 bg-rose-50 dark:bg-rose-950/20'
-                : 'border-stone-200 dark:border-stone-800'
-            }`}
-          >
-            {selectedAmount === amt && !customAmount && (
-              <Check className="absolute right-2 top-2 h-4 w-4 text-rose-600" />
-            )}
-            <div className="text-lg font-bold">{symbol} {amt}</div>
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-4">
-        <Label htmlFor="custom-amount" className="mb-1.5 block text-xs uppercase tracking-wide text-muted-foreground">
-          Outro valor
-        </Label>
-        <div className="relative">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">{symbol}</span>
-          <Input
-            id="custom-amount"
-            type="number"
-            min={(limits.minMinor / 100).toFixed(2)}
-            max={(limits.maxMinor / 100).toFixed(2)}
-            step="0.01"
-            value={customAmount}
-            onChange={(e) => { setCustomAmount(e.target.value); setSelectedAmount(null) }}
-            placeholder="0.00"
-            className="pl-8"
-          />
-        </div>
-        <p className="mt-1.5 text-xs text-muted-foreground">
-          Mínimo {symbol} {(limits.minMinor / 100).toFixed(2)} · Máximo {symbol} {(limits.maxMinor / 100).toFixed(2)}
-        </p>
-      </div>
-
-      {canProceed && (
-        <div className="mt-4 flex items-center justify-between rounded-lg bg-muted/50 px-4 py-2.5">
-          <span className="text-sm text-muted-foreground">Valor selecionado</span>
-          <span className="text-lg font-bold text-rose-700 dark:text-rose-400">{formattedAmount}</span>
-        </div>
-      )}
-
-      <div className="mt-6 flex justify-end">
-        <Button onClick={onNext} disabled={!canProceed} className="gap-1">
-          Continuar <ChevronRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function Step2Donor({
-  name, setName, email, setEmail, whatsapp, setWhatsapp, country, setCountry,
-  message, setMessage, canProceed, onBack, onNext,
-}: {
-  name: string; setName: (s: string) => void
-  email: string; setEmail: (s: string) => void
-  whatsapp: string; setWhatsapp: (s: string) => void
-  country: string; setCountry: (c: string) => void
-  message: string; setMessage: (s: string) => void
-  canProceed: boolean
-  onBack: () => void; onNext: () => void
-}) {
-  return (
-    <div>
-      <StepHeader n={2} title="Os seus dados" desc="Precisamos do seu nome e email para enviar a confirmação." />
-      <div className="grid gap-4">
-        <div className="grid gap-2">
-          <Label htmlFor="d-name">Nome *</Label>
-          <Input id="d-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} placeholder="O seu nome" required />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="d-email">Email *</Label>
-          <Input id="d-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={160} placeholder="email@exemplo.com" required />
-          <p className="text-xs text-muted-foreground">Necessário para enviar a confirmação e o agradecimento.</p>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <div className="grid gap-2">
-            <Label htmlFor="d-whats">WhatsApp (opcional)</Label>
-            <Input id="d-whats" type="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} maxLength={40} placeholder="+351 912 345 678" />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="d-country">País / Região</Label>
-            <Select value={country} onValueChange={setCountry}>
-              <SelectTrigger id="d-country">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(COUNTRY_LABELS).map(([code, label]) => (
-                  <SelectItem key={code} value={code}>{label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="d-msg">Mensagem (opcional)</Label>
-          <Textarea id="d-msg" value={message} onChange={(e) => setMessage(e.target.value)} maxLength={500} rows={2} placeholder="Palavra de apoio (opcional)" />
-        </div>
-      </div>
-
-      <div className="mt-6 flex justify-between">
-        <Button variant="ghost" onClick={onBack} className="gap-1">
-          <ChevronLeft className="h-4 w-4" /> Voltar
-        </Button>
-        <Button onClick={onNext} disabled={!canProceed} className="gap-1">
-          Continuar <ChevronRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function Step3Method({
-  currency, availableMethods, paymentMethod, setPaymentMethod, canProceed, onBack, onNext,
-}: {
-  currency: string
-  availableMethods: Array<{ key: string; available: boolean; currency: string }>
-  paymentMethod: string
-  setPaymentMethod: (m: string) => void
-  canProceed: boolean
-  onBack: () => void; onNext: () => void
-}) {
-  return (
-    <div>
-      <StepHeader n={3} title="Método de pagamento" desc={`Métodos disponíveis para ${currency}.`} />
-      {availableMethods.length === 0 ? (
-        <div className="flex items-start gap-3 rounded-lg bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-          <div>
-            <p className="font-medium">Nenhum método de pagamento automático disponível para esta moeda.</p>
-            <p className="mt-1">Pode ainda registar uma intenção de pagamento manual. A confirmação será administrativa.</p>
-          </div>
-        </div>
-      ) : (
-        <div className="grid gap-3">
-          {availableMethods.map((m) => {
-            const info = METHOD_LABELS[m.key]
-            if (!info) return null
-            const Icon = info.icon
-            return (
-              <button
-                key={m.key}
-                type="button"
-                onClick={() => setPaymentMethod(m.key)}
-                className={`flex items-center gap-3 rounded-xl border-2 p-4 text-left transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10 ${
-                  paymentMethod === m.key
-                    ? 'border-rose-600 bg-rose-50 dark:bg-rose-950/20'
-                    : 'border-stone-200 dark:border-stone-800'
-                }`}
-              >
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
-                  paymentMethod === m.key ? 'bg-rose-600 text-white' : 'bg-muted text-muted-foreground'
-                }`}>
-                  <Icon className="h-5 w-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{info.label}</span>
-                    {m.key === 'pix_manual' && <Badge variant="secondary" className="text-xs">Manual</Badge>}
-                    {m.key === 'bank_transfer' && <Badge variant="secondary" className="text-xs">SEPA</Badge>}
-                  </div>
-                  <p className="text-sm text-muted-foreground">{info.desc}</p>
-                </div>
-                {paymentMethod === m.key && <Check className="h-5 w-5 text-rose-600" />}
-              </button>
-            )
-          })}
-        </div>
-      )}
-
-      <div className="mt-6 flex justify-between">
-        <Button variant="ghost" onClick={onBack} className="gap-1">
-          <ChevronLeft className="h-4 w-4" /> Voltar
-        </Button>
-        <Button onClick={onNext} disabled={!canProceed} className="gap-1">
-          Continuar <ChevronRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function Step4PackMedia({
-  wantPackMedia, setWantPackMedia, hasMaterials, onBack, onNext,
-}: {
-  wantPackMedia: boolean
-  setWantPackMedia: (v: boolean) => void
-  hasMaterials: boolean
-  onBack: () => void; onNext: () => void
-}) {
-  return (
-    <div>
-      <StepHeader n={4} title="Pack Media de agradecimento" desc="Receba os materiais digitais de agradecimento da campanha." />
-      <label className="flex cursor-pointer items-start gap-3 rounded-xl border-2 p-4 transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10">
-        <Checkbox
-          checked={wantPackMedia}
-          onCheckedChange={(v) => setWantPackMedia(v === true)}
-          className="mt-0.5"
-        />
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <Package className="h-5 w-5 text-rose-600" />
-            <span className="font-semibold">Quero receber o Pack Media de agradecimento pelo meu apoio.</span>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            O pack contém os materiais digitais de agradecimento disponibilizados pela campanha.
-            Será entregue por email após confirmação do pagamento.
-          </p>
-          {!hasMaterials && (
-            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-              Esta campanha ainda não tem materiais digitais publicados. Se selecionar esta opção, será notificado quando estiverem disponíveis.
-            </p>
-          )}
-          <p className="mt-2 text-xs text-muted-foreground">
-            Esta opção não constitui consentimento para comunicações promocionais.
-          </p>
-        </div>
-      </label>
-
-      <div className="mt-6 flex justify-between">
-        <Button variant="ghost" onClick={onBack} className="gap-1">
-          <ChevronLeft className="h-4 w-4" /> Voltar
-        </Button>
-        <Button onClick={onNext} className="gap-1">
-          Continuar <ChevronRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function Step5Summary({
-  campaignName, formattedAmount, currency, paymentMethod, name, email, wantPackMedia,
-  submitting, onBack, onSubmit,
-}: {
-  campaignName: string
-  formattedAmount: string
-  currency: string
-  paymentMethod: string
-  name: string
-  email: string
-  wantPackMedia: boolean
-  submitting: boolean
-  onBack: () => void
-  onSubmit: () => void
-}) {
-  const methodInfo = METHOD_LABELS[paymentMethod]
-  return (
-    <div>
-      <StepHeader n={5} title="Resumo" desc="Confirme os dados antes de avançar para o pagamento." />
-      <div className="space-y-3 rounded-xl border bg-muted/30 p-5">
-        <SummaryRow label="Campanha" value={campaignName} />
-        <SummaryRow label="Valor" value={formattedAmount} />
-        <SummaryRow label="Moeda" value={currency} />
-        <SummaryRow label="Método" value={methodInfo?.label ?? paymentMethod} />
-        <SummaryRow label="Nome" value={name} />
-        <SummaryRow label="Email" value={email} />
-        <SummaryRow label="Pack Media" value={wantPackMedia ? 'Sim' : 'Não'} />
-      </div>
-
-      <div className="mt-4 flex items-start gap-2 rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>O apoio só será marcado como confirmado após validação do pagamento por notificação do fornecedor ou confirmação administrativa.</span>
-      </div>
-
-      <div className="mt-6 flex justify-between">
-        <Button variant="ghost" onClick={onBack} className="gap-1" disabled={submitting}>
-          <ChevronLeft className="h-4 w-4" /> Voltar
-        </Button>
-        <Button onClick={onSubmit} disabled={submitting} className="gap-2">
-          {submitting ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> A processar…</>
-          ) : (
-            <>Confirmar e pagar <ArrowRight className="h-4 w-4" /></>
-          )}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="text-sm font-medium">{value}</span>
+    <div className="flex flex-col">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="font-medium">{value}</span>
     </div>
   )
 }
 
 function ManualPaymentResult({
-  result, methods, paymentMethod, campaignName,
+  result, methods, campaignName, locale, t,
 }: {
-  result: { id: string; paymentMethod: string }
+  result: { id: string; paymentMethod: string; status: string }
   methods: PaymentMethodsResponse | null
-  paymentMethod: string
   campaignName: string
+  locale: Locale
+  t: (key: string, params?: Record<string, string | number>) => string
 }) {
-  const [copied, setCopied] = useState(false)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
   const bank = methods?.methods.bank_transfer
   const pix = methods?.methods.pix_manual
 
-  const copyIban = async () => {
-    if (bank?.iban) {
-      try {
-        await navigator.clipboard.writeText(bank.iban)
-        setCopied(true)
-        toast.success('IBAN copiado')
-        setTimeout(() => setCopied(false), 1500)
-      } catch {
-        toast.error('Não foi possível copiar')
-      }
+  const copy = async (field: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopiedField(field)
+      toast.success(`${t('iban.copy')} ✓`)
+      setTimeout(() => setCopiedField(null), 1500)
+    } catch {
+      toast.error('Erro ao copiar')
     }
   }
 
@@ -693,54 +547,93 @@ function ManualPaymentResult({
         <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-950/40">
           <Check className="h-8 w-8 text-emerald-600" />
         </div>
-        <CardTitle className="text-xl">Intenção registada</CardTitle>
+        <CardTitle className="text-xl">{t('result.title')}</CardTitle>
         <CardDescription>
-          Recebemos a sua intenção de apoio a <strong>{campaignName}</strong>.
-          A confirmação é administrativa — este registo não comprova pagamento.
+          {campaignName} — {t('result.desc')}
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {paymentMethod === 'pix_manual' && pix?.available && (
+      <CardContent className="space-y-5">
+        {/* PIX Manual */}
+        {result.paymentMethod === 'pix_manual' && pix?.available && (
           <div className="space-y-3">
-            <p className="text-sm font-medium">Pagamento via PIX:</p>
-            {pix.beneficiaryName && <p className="text-sm text-muted-foreground">Beneficiário: {pix.beneficiaryName}</p>}
+            <h3 className="flex items-center gap-2 text-sm font-semibold">
+              <QrCode className="h-4 w-4 text-rose-600" /> {t('pix.title')}
+            </h3>
+            {pix.beneficiaryName && (
+              <p className="text-sm text-muted-foreground">
+                {t('pix.beneficiary')}: <span className="font-medium text-foreground">{pix.beneficiaryName}</span>
+              </p>
+            )}
             <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/30 p-4">
-              <img src="/api/public/pix-qr" alt="QR Code PIX" className="h-48 w-48 rounded-lg border bg-white p-2" />
-              <p className="text-xs text-muted-foreground">Leia o QR Code com a sua app de banco para pagar.</p>
+              <img
+                src="/api/public/pix-qr"
+                alt="QR Code PIX"
+                className="h-48 w-48 rounded-lg border bg-white p-2"
+                loading="lazy"
+              />
+              <p className="text-center text-xs text-muted-foreground">{t('pix.instructions')}</p>
+            </div>
+            <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              <AlertCircle className="mb-1 h-3.5 w-3.5" /> {t('pix.waiting')}
             </div>
           </div>
         )}
-        {paymentMethod === 'bank_transfer' && bank?.available && (
-          <div className="space-y-2">
-            <p className="text-sm font-medium">Dados para transferência (IBAN):</p>
-            {bank.holder && <CopyRow label="Titular" value={bank.holder} />}
-            {bank.bank && <CopyRow label="Banco" value={bank.bank} />}
-            {bank.iban && <CopyRow label="IBAN" value={bank.iban} mono onCopy={copyIban} copied={copied} />}
-            {bank.bic && <CopyRow label="BIC/SWIFT" value={bank.bic} mono />}
+
+        {/* IBAN / Bank Transfer */}
+        {result.paymentMethod === 'bank_transfer' && bank?.available && (
+          <div className="space-y-3">
+            <h3 className="flex items-center gap-2 text-sm font-semibold">
+              <Landmark className="h-4 w-4 text-rose-600" /> {t('iban.title')}
+            </h3>
+            {bank.holder && (
+              <CopyRow label={t('iban.holder')} value={bank.holder} onCopy={() => copy('holder', bank.holder!)} copied={copiedField === 'holder'} t={t} />
+            )}
+            {bank.bank && (
+              <CopyRow label={t('iban.bank')} value={bank.bank} onCopy={() => copy('bank', bank.bank!)} copied={copiedField === 'bank'} t={t} />
+            )}
+            {bank.iban && (
+              <CopyRow label={t('iban.iban')} value={bank.iban} mono onCopy={() => copy('iban', bank.iban!)} copied={copiedField === 'iban'} t={t} />
+            )}
+            {bank.bic && (
+              <CopyRow label={t('iban.bic')} value={bank.bic} mono onCopy={() => copy('bic', bank.bic!)} copied={copiedField === 'bic'} t={t} />
+            )}
+            <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              <AlertCircle className="mb-1 h-3.5 w-3.5" /> {t('iban.instructions')}
+            </div>
           </div>
         )}
+
         <Separator />
+
         <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
-          <p>Referência: <code className="font-mono">{result.id.slice(0, 12)}</code></p>
-          <p className="mt-1">Após efetuar o pagamento, a confirmação será feita administrativamente. Obrigado pelo seu apoio.</p>
+          <p>{t('result.reference')}: <code className="font-mono text-foreground">{result.id.slice(0, 12)}</code></p>
+          <p className="mt-1">{t('result.waiting')}</p>
         </div>
       </CardContent>
     </Card>
   )
 }
 
-function CopyRow({ label, value, mono, onCopy, copied }: { label: string; value: string; mono?: boolean; onCopy?: () => void; copied?: boolean }) {
+function CopyRow({
+  label, value, mono, onCopy, copied, t,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  onCopy: () => void
+  copied: boolean
+  t: (key: string) => string
+}) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+    <div className="flex items-center justify-between gap-3 rounded-md border p-2.5">
       <div className="min-w-0">
         <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
         <div className={`truncate text-sm font-medium ${mono ? 'font-mono' : ''}`}>{value}</div>
       </div>
-      {onCopy && (
-        <Button variant="outline" size="sm" onClick={onCopy} className="shrink-0">
-          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-        </Button>
-      )}
+      <Button variant="outline" size="sm" onClick={onCopy} className="shrink-0">
+        {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+        <span className="sr-only">{t('iban.copy')}</span>
+      </Button>
     </div>
   )
 }
