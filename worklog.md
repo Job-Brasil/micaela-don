@@ -204,3 +204,34 @@ Stage Summary:
 - Nenhuma alteração a rotas API, src/lib/*, prisma/*, ou public-site.tsx — só admin-app.tsx foi reescrito.
 - Funcionalidades preservadas: EUR (config + approve + publish), PIX (upload + preview + approve + publish), Materiais (CRUD + approve + publish + NOVO coverImageRef/coverAlt/description + Editar), Donativos (confirm + reject + thankyou), Modelos (CRUD), Canais (enabled + published), Auditoria (read-only).
 - NOVAS funcionalidades: hero.layout Select, 3 campos de upload de imagens (banner, retrato, história) com previews via ImageUploader, capa+descrição+alt para materiais, dialog de edição de material.
+
+---
+Task ID: DONATION-FLOW
+Agent: orchestrator (main)
+Task: Novo fluxo de doação multi-etapa + Pack Media + métodos dinâmicos.
+
+Work Log:
+- Schema: DonationIntent +amountMinor, +donorCountry, +paymentMethod, +wantPackMedia
+- Migration SQL: supabase/migrations/etapa-donation-flow.sql (idempotente)
+- API /api/public/payment-methods: retorna disponibilidade real (Stripe env, PIX config, bank config)
+- API /api/public/donation-intent: validação server-side de amountMinor (min/max por moeda), compatibilidade método↔moeda, status inicial 'awaiting_manual_confirmation' para manuais
+- Component DonationFlow: 5 etapas (valor→dados→método→pack media→resumo) com routing para Stripe/PIX/IBAN
+- Deteção de país via Accept-Language (sem geolocalização)
+- Pack Media: opcional, desmarcado por defeito, entregue só após pagamento confirmado
+- Integração com public-site.tsx: substitui DonationForm antigo
+
+Validação em PRODUÇÃO (https://micaela-don.vercel.app):
+- GET / → 200, fluxo renderiza sem erros
+- payment-methods API: mbway=True (Stripe configurado), pix_manual=True (PIX publicado)
+- Fluxo completo: €20 → dados → MB WAY → sem pack → resumo → redirect para Stripe Checkout
+- Stripe Checkout carrega ("Powered by Stripe")
+- POST donation-intent → 201 com amountMinor, paymentMethod, wantPackMedia, status correto
+- Sem erros de runtime/hydration
+
+Stage Summary:
+- Fluxo de doação multi-etapa ativo e funcional em produção
+- MB WAY via Stripe operacional (redirect confirmado)
+- PIX manual preservado
+- PixGo permanece desativado (decisão comercial pendente)
+- Pack Media implementado (entrega após confirmação)
+- Migration SQL pendente de aplicação manual no Supabase (código resiliente funciona sem ela)
