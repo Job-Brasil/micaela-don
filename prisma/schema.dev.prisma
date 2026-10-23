@@ -216,3 +216,61 @@ model AuditLog {
   @@index([createdAt])
   @@map("audit_log")
 }
+
+model PaymentOrder {
+  id              String   @id @default(cuid())
+  campaignId      String   @map("campaign_id")
+  donationIntentId String? @map("donation_intent_id")
+  provider        String
+  method          String
+  internalReference String @unique @map("internal_reference")
+  currency        String
+  amount          Decimal
+  status          String   @default("pending")
+  externalId      String?  @map("external_id")
+  customerEmail   String?  @map("customer_email")
+  customerName    String?  @map("customer_name")
+  customerPhone   String?  @map("customer_phone")
+  deliveryStatus  String   @default("pending") @map("delivery_status")
+  metadata        String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  confirmedAt     DateTime? @map("confirmed_at")
+  refundedAt      DateTime? @map("refunded_at")
+  confirmedById   String?  @map("confirmed_by_id")
+
+  @@unique([provider, externalId])
+  @@index([campaignId, status])
+  @@index([internalReference])
+  @@index([customerEmail])
+  @@map("payment_order")
+}
+
+model PaymentEvent {
+  id              String   @id @default(cuid())
+  orderId         String?  @map("order_id")
+  provider        String
+  eventType       String   @map("event_type")
+  externalEventId String   @unique @map("external_event_id")
+  payloadHash     String?  @map("payload_hash")
+  receivedAt      DateTime @default(now()) @map("received_at")
+  processedAt     DateTime? @map("processed_at")
+  status          String   @default("pending")
+
+  @@index([orderId])
+  @@index([provider, eventType])
+  @@map("payment_event")
+}
+
+model DeliveryLink {
+  id          String   @id @default(cuid())
+  orderId     String   @map("order_id")
+  token       String   @unique
+  assetRef    String   @map("asset_ref")
+  expiresAt   DateTime @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([orderId])
+  @@map("delivery_link")
+}
