@@ -10,6 +10,7 @@ const PRISMA_ENGINE_TRACE = ["./node_modules/.prisma/client/**/*"];
 
 const DB_ROUTES = [
   "/",
+  "/[slug]",
   "/api/public/site",
   "/api/public/pix-qr",
   "/api/public/donation-intent",
@@ -34,6 +35,9 @@ const DB_ROUTES = [
   "/api/admin/messages",
   "/api/admin/messages/[id]",
   "/api/admin/audit",
+  "/api/admin/assets",
+  "/api/admin/assets/[id]",
+  "/api/admin/assets/[id]/preview",
 ];
 
 const outputFileTracingIncludes = Object.fromEntries(

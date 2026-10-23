@@ -157,6 +157,7 @@ export function PublicSite({ initial }: { initial: PublicSite }) {
           payment={initial.payment}
           paymentStatus={initial.paymentStatus}
           pix={initial.pix}
+          campaignId={initial.campaign?.id ?? 'micaela'}
         />
 
         <MaterialsSection title={s['materials.title'] ?? 'Materiais'} materials={initial.materials} />
@@ -500,12 +501,14 @@ function DonateSection({
   payment,
   paymentStatus,
   pix,
+  campaignId,
 }: {
   title: string
   note: string
   payment: PublicSite['payment']
   paymentStatus: PublicSite['paymentStatus']
   pix: PublicSite['pix']
+  campaignId: string
 }) {
   return (
     <section
@@ -542,7 +545,7 @@ function DonateSection({
         </Tabs>
 
         <Separator className="my-12" />
-        <DonationForm />
+        <DonationForm campaignId={campaignId} />
       </div>
     </section>
   )
@@ -696,7 +699,7 @@ function PixCard({ pix }: { pix: PublicSite['pix'] }) {
  * Donation intent form — multi-channel consent
  * ------------------------------------------------------------------------- */
 
-function DonationForm() {
+function DonationForm({ campaignId }: { campaignId: string }) {
   const [currency, setCurrency] = useState<'EUR' | 'BRL'>('EUR')
   const [amount, setAmount] = useState('')
   const [name, setName] = useState('')
@@ -741,6 +744,7 @@ function DonationForm() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          campaignId,
           currency,
           amount: amount ? Number(amount) : undefined,
           donorName: name || undefined,

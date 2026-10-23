@@ -15,16 +15,35 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Editable public text blocks (hero, story, etc.). Admin-managed.
-model SiteSetting {
-  key       String   @id
-  value     String
-  updatedAt DateTime @updatedAt @map("updated_at")
+model Campaign {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  status      String   @default("draft")
+  isDefault   Boolean  @default(false) @map("is_default")
+  currency    String   @default("EUR")
+  country     String   @default("PT")
+  seoTitle    String?  @map("seo_title")
+  seoDescription String? @map("seo_description")
+  canonicalUrl String? @map("canonical_url")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
+  @@index([status])
+  @@map("campaign")
+}
+
+model SiteSetting {
+  key         String   @id
+  campaignId  String   @default("micaela") @map("campaign_id")
+  value       String
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([campaignId, key])
+  @@index([campaignId])
   @@map("site_setting")
 }
 
-/// Uploaded site assets (images) stored as base64 server-side.
 model SiteAsset {
   id        String   @id @default(cuid())
   name      String
@@ -40,6 +59,7 @@ model SiteAsset {
 
 model PaymentConfig {
   id           String    @id @default(cuid())
+  campaignId   String    @default("micaela") @map("campaign_id")
   currency     String    @default("EUR")
   holder       String
   bank         String
@@ -54,11 +74,13 @@ model PaymentConfig {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
+  @@index([campaignId])
   @@map("payment_config")
 }
 
 model PixConfig {
   id              String   @id @default(cuid())
+  campaignId      String   @default("micaela") @map("campaign_id")
   qrImageData     String? @map("qr_image_data")
   qrImageMime     String? @map("qr_image_mime")
   beneficiaryName String? @map("beneficiary_name")
@@ -70,15 +92,18 @@ model PixConfig {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
+  @@index([campaignId])
   @@map("pix_config")
 }
 
 model DonationIntent {
   id            String   @id @default(cuid())
+  campaignId    String   @default("micaela") @map("campaign_id")
   currency      String
   amount        Float?
   donorName     String?  @map("donor_name")
   donorEmail    String?  @map("donor_email")
+  donorWhatsapp String?  @map("donor_whatsapp")
   message       String?
   status        String   @default("received")
   confirmed     Boolean  @default(false)
@@ -88,6 +113,7 @@ model DonationIntent {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
+  @@index([campaignId])
   @@index([createdAt])
   @@index([status])
   @@map("donation_intent")
@@ -95,6 +121,7 @@ model DonationIntent {
 
 model CampaignMaterial {
   id           String   @id @default(cuid())
+  campaignId   String   @default("micaela") @map("campaign_id")
   name         String
   category     String
   type         String
@@ -111,7 +138,7 @@ model CampaignMaterial {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  @@index([approved, published])
+  @@index([campaignId, approved, published])
   @@map("campaign_material")
 }
 
@@ -129,20 +156,23 @@ model ThankYouTemplate {
 }
 
 model ContactChannel {
-  id        String   @id @default(cuid())
-  type      String
-  label     String
-  value     String
-  enabled   Boolean  @default(false)
-  published Boolean  @default(false)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id         String   @id @default(cuid())
+  campaignId String   @default("micaela") @map("campaign_id")
+  type       String
+  label      String
+  value      String
+  enabled    Boolean  @default(false)
+  published  Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
+  @@index([campaignId])
   @@map("contact_channel")
 }
 
 model ConsentRecord {
   id         String   @id @default(cuid())
+  campaignId String   @default("micaela") @map("campaign_id")
   donorEmail String?  @map("donor_email")
   donorName  String?  @map("donor_name")
   channel    String
@@ -150,12 +180,13 @@ model ConsentRecord {
   ip         String?
   createdAt  DateTime @default(now()) @map("created_at")
 
-  @@index([channel, donorEmail])
+  @@index([campaignId, channel, donorEmail])
   @@map("consent_record")
 }
 
 model OutboundMessage {
   id                String   @id @default(cuid())
+  campaignId        String   @default("micaela") @map("campaign_id")
   toAddress         String   @map("to_address")
   channel           String
   templateId        String?  @map("template_id")
@@ -168,7 +199,7 @@ model OutboundMessage {
   updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@unique([channel, toAddress, donationIntentId])
-  @@index([status])
+  @@index([campaignId, status])
   @@map("outbound_message")
 }
 

@@ -6,6 +6,7 @@ import { clientIp } from '@/lib/auth'
 import { audit } from '@/lib/audit'
 
 const schema = z.object({
+  campaignId: z.string().trim().max(60).default('micaela'),
   currency: z.enum(['EUR', 'BRL']),
   amount: z.number().nonnegative().optional(),
   donorName: z.string().trim().max(120).optional(),
@@ -51,22 +52,23 @@ export async function POST(req: NextRequest) {
 
   const intent = await db.donationIntent.create({
     data: {
+      campaignId: d.campaignId,
       currency: d.currency,
       amount: d.amount ?? null,
       donorName: d.donorName || null,
       donorEmail: d.donorEmail || null,
-      message: [d.message, d.donorWhatsapp ? `WhatsApp: ${d.donorWhatsapp}` : null]
-        .filter(Boolean)
-        .join(' · ') || null,
+      donorWhatsapp: d.donorWhatsapp || null,
+      message: d.message || null,
       status: 'received',
       ip,
     },
   })
 
-  // Record consent per channel explicitly.
+  // Record consent per channel explicitly (scoped to campaign).
   for (const channel of d.consentChannels) {
     await db.consentRecord.create({
       data: {
+        campaignId: d.campaignId,
         donorEmail: d.donorEmail || null,
         donorName: d.donorName || null,
         channel,

@@ -40,6 +40,21 @@ if (isDev && urlIsPostgres) {
 console.log(`[seed] target: ${isDev ? 'dev' : 'production'} (${urlIsPostgres ? 'PostgreSQL' : 'SQLite'})`)
 
 async function main() {
+  // 0) Default campaign (Micaela) — idempotent create-only.
+  await db.campaign.upsert({
+    where: { id: 'micaela' },
+    update: {},
+    create: {
+      id: 'micaela',
+      slug: 'micaela',
+      name: 'A história da Micaela',
+      status: 'published',
+      isDefault: true,
+      currency: 'EUR',
+      country: 'PT',
+    },
+  })
+
   // 1) Site settings (editable public text). Sensible Portuguese placeholders.
   //    create-only: if an admin already edited a value, it is preserved.
   const settings: Record<string, string> = {

@@ -1,6 +1,16 @@
 import { db } from '@/lib/db'
 
 export type PublicSite = {
+  campaign: {
+    id: string
+    slug: string
+    name: string
+    currency: string
+    country: string
+    seoTitle: string | null
+    seoDescription: string | null
+    canonicalUrl: string | null
+  } | null
   settings: Record<string, string>
   hero: {
     layout: string
@@ -53,20 +63,31 @@ function resolveImageRef(ref: string | null | undefined): string | null {
 }
 
 /**
- * The single source of truth for what a visitor may see.
- * Returns ONLY published + approved data. Private data never leaves here.
+ * The single source of truth for what a visitor may see for a given campaign.
+ * Returns ONLY published + approved data scoped to the campaign. Private data never leaves here.
+ *
+ * @param campaignId - defaults to 'micaela' (the default campaign served at "/")
  */
-export async function getPublicSite(): Promise<PublicSite> {
+export async function getPublicSite(campaignId: string = 'micaela'): Promise<PublicSite> {
   try {
     // Run queries SEQUENTIALLY (PgBouncer connection_limit=1).
-    const settings = await db.siteSetting.findMany()
-    const payment = await db.paymentConfig.findFirst({ orderBy: { updatedAt: 'desc' } })
-    const pix = await db.pixConfig.findFirst({ orderBy: { updatedAt: 'desc' } })
+    const campaign = await db.campaign.findUnique({ where: { id: campaignId } })
+    const settings = await db.siteSetting.findMany({ where: { campaignId } })
+    const payment = await db.paymentConfig.findFirst({
+      where: { campaignId },
+      orderBy: { updatedAt: 'desc' },
+    })
+    const pix = await db.pixConfig.findFirst({
+      where: { campaignId },
+      orderBy: { updatedAt: 'desc' },
+    })
     const materials = await db.campaignMaterial.findMany({
-      where: { approved: true, published: true },
+      where: { campaignId, approved: true, published: true },
       orderBy: { createdAt: 'desc' },
     })
-    const channels = await db.contactChannel.findMany({ where: { enabled: true, published: true } })
+    const channels = await db.contactChannel.findMany({
+      where: { campaignId, enabled: true, published: true },
+    })
 
     const settingsMap = settings.reduce<Record<string, string>>((acc, s) => {
       acc[s.key] = s.value
@@ -76,7 +97,6 @@ export async function getPublicSite(): Promise<PublicSite> {
     const showPayment = !!payment && payment.published && payment.approved
     const showPix = !!pix && pix.published && pix.approved && !!pix.qrImageData
 
-    // Hero config from settings
     const hero = {
       layout: settingsMap['hero.layout'] ?? 'none',
       bannerImage: resolveImageRef(settingsMap['hero.bannerImage'] ?? null),
@@ -88,6 +108,18 @@ export async function getPublicSite(): Promise<PublicSite> {
     }
 
     return {
+      campaign: campaign
+        ? {
+            id: campaign.id,
+            slug: campaign.slug,
+            name: campaign.name,
+            currency: campaign.currency,
+            country: campaign.country,
+            seoTitle: campaign.seoTitle,
+            seoDescription: campaign.seoDescription,
+            canonicalUrl: campaign.canonicalUrl,
+          }
+        : null,
       settings: settingsMap,
       hero,
       payment: showPayment
@@ -131,7 +163,25 @@ export async function getPublicSite(): Promise<PublicSite> {
   }
 }
 
+/**
+ * Resolve a campaign by slug. Returns the campaign id if found and published,
+ * otherwise null. Used by the /{slug} dynamic route.
+ */
+export async function getCampaignIdBySlug(slug: string): Promise<string | null> {
+  try {
+    const campaign = await db.campaign.findUnique({
+      where: { slug },
+      select: { id: true, status: true },
+    })
+    if (!campaign || campaign.status !== 'published') return null
+    return campaign.id
+  } catch {
+    return null
+  }
+}
+
 const EMPTY_PUBLIC_SITE: PublicSite = {
+  campaign: null,
   settings: {},
   hero: {
     layout: 'none',
