@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic'
 
 // Reserved slugs that should NOT be treated as campaigns (they conflict with
 // Next.js internal routes or API routes).
-const RESERVED_SLUGS = new Set(['api', 'admin', '_next', 'favicon.ico', 'icon.svg', 'robots.txt', 'sitemap.xml'])
+const RESERVED_SLUGS = new Set(['api', 'admin', '_next', 'favicon.ico', 'icon.svg', 'robots.txt', 'sitemap.xml', 'pagamento'])
 
 type Params = { params: Promise<{ slug: string }> }
 

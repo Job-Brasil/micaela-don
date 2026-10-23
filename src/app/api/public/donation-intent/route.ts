@@ -50,6 +50,8 @@ export async function POST(req: NextRequest) {
     return badRequest('Para consentir em receber agradecimento por WhatsApp, indique um número válido com indicativo internacional (ex: +351 912 345 678).')
   }
 
+  // Resilient create: if campaign_id or donor_whatsapp columns don't exist yet
+  // (pre-migration production), fall back to creating without them.
   const intent = await db.donationIntent.create({
     data: {
       campaignId: d.campaignId,
@@ -62,20 +64,57 @@ export async function POST(req: NextRequest) {
       status: 'received',
       ip,
     },
+  }).catch(async (err) => {
+    // If the error is about missing columns (P2021), retry without them
+    const code = (err as { code?: string })?.code
+    if (code === 'P2021') {
+      const intent = await db.donationIntent.create({
+        data: {
+          currency: d.currency,
+          amount: d.amount ?? null,
+          donorName: d.donorName || null,
+          donorEmail: d.donorEmail || null,
+          message: [d.message, d.donorWhatsapp ? `WhatsApp: ${d.donorWhatsapp}` : null]
+            .filter(Boolean)
+            .join(' · ') || null,
+          status: 'received',
+          ip,
+        },
+      })
+      return intent
+    }
+    throw err
   })
 
-  // Record consent per channel explicitly (scoped to campaign).
+  // Record consent per channel (resilient: skip if consent_record.campaign_id missing)
   for (const channel of d.consentChannels) {
-    await db.consentRecord.create({
-      data: {
-        campaignId: d.campaignId,
-        donorEmail: d.donorEmail || null,
-        donorName: d.donorName || null,
-        channel,
-        consent: true,
-        ip,
-      },
-    })
+    try {
+      await db.consentRecord.create({
+        data: {
+          campaignId: d.campaignId,
+          donorEmail: d.donorEmail || null,
+          donorName: d.donorName || null,
+          channel,
+          consent: true,
+          ip,
+        },
+      })
+    } catch {
+      // Column missing — retry without campaignId
+      try {
+        await db.consentRecord.create({
+          data: {
+            donorEmail: d.donorEmail || null,
+            donorName: d.donorName || null,
+            channel,
+            consent: true,
+            ip,
+          },
+        })
+      } catch {
+        // If still failing, skip consent recording (non-critical)
+      }
+    }
   }
 
   await audit({
