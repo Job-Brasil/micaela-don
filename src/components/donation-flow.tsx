@@ -1,12 +1,11 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { loadStripe } from '@stripe/stripe-js'
 import { toast } from 'sonner'
 import {
   Heart,
   Check,
-  ChevronRight,
-  ChevronLeft,
   ShieldCheck,
   Loader2,
   Landmark,
@@ -16,6 +15,8 @@ import {
   Package,
   AlertCircle,
   ArrowRight,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,12 +30,12 @@ import { Checkbox } from '@/components/ui/checkbox'
 
 type PaymentMethodsResponse = {
   methods: {
-    mbway: { available: boolean; currency: string; reason?: string | null }
-    pix_automatic: { available: boolean; currency: string; reason?: string | null }
-    pix_manual: { available: boolean; currency: string; beneficiaryName?: string | null }
+    mbway: { available: boolean; currencies: string[]; reason?: string | null }
+    pix_automatic: { available: boolean; currencies: string[]; reason?: string | null }
+    pix_manual: { available: boolean; currencies: string[]; beneficiaryName?: string | null }
     bank_transfer: {
       available: boolean
-      currency: string
+      currencies: string[]
       holder?: string | null
       bank?: string | null
       iban?: string | null
@@ -77,12 +78,16 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [whatsapp, setWhatsapp] = useState('')
+  const [cpf, setCpf] = useState('')
   const [country, setCountry] = useState('PT')
   const [paymentMethod, setPaymentMethod] = useState<string>('')
   const [wantPackMedia, setWantPackMedia] = useState(false)
   const [message, setMessage] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<{ id: string; paymentMethod: string; url?: string } | null>(null)
+  const [stripeClientSecret, setStripeClientSecret] = useState<string | null>(null)
+  const [stripeLoading, setStripeLoading] = useState(false)
+  const checkoutRef = useRef<{ destroy: () => void } | null>(null)
 
   useEffect(() => {
     fetch(`/api/public/payment-methods?campaignId=${encodeURIComponent(campaignId)}`)
@@ -91,6 +96,16 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
       .catch(() => {})
       .finally(() => setLoadingMethods(false))
   }, [campaignId])
+
+  // Cleanup: destroy Stripe embedded checkout when component unmounts
+  useEffect(() => {
+    return () => {
+      if (checkoutRef.current) {
+        checkoutRef.current.destroy()
+        checkoutRef.current = null
+      }
+    }
+  }, [])
 
   // Auto-suggest country from Accept-Language (no geolocation)
   useEffect(() => {
@@ -125,7 +140,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const availableMethods = useMemo(() => {
     if (!methods) return []
     return Object.entries(methods.methods)
-      .filter(([, info]) => info.available && info.currency === currency)
+      .filter(([, info]) => info.available && info.currencies.includes(currency))
       .map(([key, info]) => ({ key, ...info }))
   }, [methods, currency])
 
@@ -165,7 +180,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
 
       setResult({ id: data.id, paymentMethod: data.paymentMethod })
 
-      // If Stripe MB WAY, redirect to checkout
+      // If Stripe MB WAY, create embedded checkout session
       if (paymentMethod === 'mbway') {
         const stripeRes = await fetch('/api/payments/stripe/create-session', {
           method: 'POST',
@@ -179,10 +194,63 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           }),
         })
         const stripeData = await stripeRes.json()
-        if (stripeData.url) {
-          window.location.href = stripeData.url
+        if (stripeData.clientSecret) {
+          // Load Stripe and mount embedded checkout
+          setStripeLoading(true)
+          try {
+            const stripePk = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+            if (!stripePk) {
+              toast.error('Stripe não configurado no frontend. Contacte o administrador.')
+              setStripeLoading(false)
+              return
+            }
+            const stripe = await loadStripe(stripePk)
+            if (!stripe) {
+              toast.error('Não foi possível carregar o Stripe.')
+              setStripeLoading(false)
+              return
+            }
+            // initEmbeddedCheckout is available on the Stripe object in recent versions
+            const stripeAny = stripe as unknown as { initEmbeddedCheckout: (opts: { clientSecret: string }) => Promise<{ mount: (sel: string) => void; destroy: () => void }> }
+            const checkout = await stripeAny.initEmbeddedCheckout({
+              clientSecret: stripeData.clientSecret,
+            })
+            checkout.mount('#stripe-checkout-container')
+            checkoutRef.current = checkout
+            setStripeClientSecret(stripeData.clientSecret)
+            setStripeLoading(false)
+          } catch (e) {
+            toast.error('Erro ao carregar o checkout do Stripe.')
+            setStripeLoading(false)
+            console.error('[stripe embedded]', e)
+          }
           return
         }
+      }
+
+      // If PixGo PIX automatic, create charge and show QR inline
+      if (paymentMethod === 'pix_automatic') {
+        const pixgoRes = await fetch('/api/payments/pixgo/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            campaignId,
+            amount: amountMajor,
+            currency: 'BRL',
+            customerEmail: email.trim(),
+            customerName: name.trim(),
+            customerCpf: cpf.trim(),
+            description: `Apoio — ${campaignName}`,
+          }),
+        })
+        const pixgoData = await pixgoRes.json()
+        if (!pixgoRes.ok) throw new Error(pixgoData?.error ?? 'Erro PixGo')
+        setResult({
+          id: pixgoData.reference ?? data.id,
+          paymentMethod: 'pix_automatic',
+          url: pixgoData.qrCodeImage ?? pixgoData.qrCode ?? undefined,
+        })
+        return
       }
 
       // For manual methods, show confirmation
@@ -202,6 +270,34 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
         <Loader2 className="mr-2 h-5 w-5 animate-spin" /> A preparar métodos de pagamento…
       </div>
     )
+  }
+
+  // Stripe embedded checkout — show inline iframe
+  if (stripeClientSecret) {
+    return (
+      <Card className="overflow-hidden border-stone-200/70 shadow-sm dark:border-stone-800/70">
+        <CardHeader className="border-b bg-gradient-to-r from-rose-50 to-amber-50/50 pb-4 dark:from-rose-950/20 dark:to-amber-950/10">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <CreditCard className="h-5 w-5 text-rose-600" />
+            Pagamento MB WAY
+          </CardTitle>
+          <CardDescription>Complete o pagamento na janela abaixo. O apoio só é confirmado após validação.</CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          {stripeLoading && (
+            <div className="flex items-center justify-center p-12 text-muted-foreground">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> A carregar o checkout seguro…
+            </div>
+          )}
+          <div id="stripe-checkout-container" className="min-h-[400px]" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // PixGo PIX automatic — show QR inline
+  if (result && result.paymentMethod === 'pix_automatic') {
+    return <PixGoPaymentResult result={result} campaignName={campaignName} />
   }
 
   if (result && (result.paymentMethod === 'pix_manual' || result.paymentMethod === 'bank_transfer')) {
@@ -250,6 +346,8 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
             canProceed={canProceedStep2}
             onBack={() => setStep(1)}
             onNext={() => setStep(3)}
+            paymentMethod={paymentMethod}
+            cpf={cpf} setCpf={setCpf}
           />
         )}
 
@@ -424,7 +522,7 @@ function Step1Value({
 
 function Step2Donor({
   name, setName, email, setEmail, whatsapp, setWhatsapp, country, setCountry,
-  message, setMessage, canProceed, onBack, onNext,
+  message, setMessage, canProceed, onBack, onNext, paymentMethod, cpf, setCpf,
 }: {
   name: string; setName: (s: string) => void
   email: string; setEmail: (s: string) => void
@@ -433,6 +531,8 @@ function Step2Donor({
   message: string; setMessage: (s: string) => void
   canProceed: boolean
   onBack: () => void; onNext: () => void
+  paymentMethod: string
+  cpf: string; setCpf: (s: string) => void
 }) {
   return (
     <div>
@@ -452,6 +552,13 @@ function Step2Donor({
             <Label htmlFor="d-whats">WhatsApp (opcional)</Label>
             <Input id="d-whats" type="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} maxLength={40} placeholder="+351 912 345 678" />
           </div>
+          {paymentMethod === 'pix_automatic' && (
+            <div className="grid gap-2">
+              <Label htmlFor="d-cpf">CPF/CNPJ *</Label>
+              <Input id="d-cpf" value={cpf} onChange={(e) => setCpf(e.target.value)} maxLength={18} placeholder="000.000.000-00" />
+              <p className="text-xs text-muted-foreground">Necessário para gerar o PIX automático.</p>
+            </div>
+          )}
           <div className="grid gap-2">
             <Label htmlFor="d-country">País / Região</Label>
             <Select value={country} onValueChange={setCountry}>
@@ -488,7 +595,7 @@ function Step3Method({
   currency, availableMethods, paymentMethod, setPaymentMethod, canProceed, onBack, onNext,
 }: {
   currency: string
-  availableMethods: Array<{ key: string; available: boolean; currency: string }>
+  availableMethods: Array<{ key: string; available: boolean; currencies: string[]; [k: string]: unknown }>
   paymentMethod: string
   setPaymentMethod: (m: string) => void
   canProceed: boolean
@@ -742,5 +849,67 @@ function CopyRow({ label, value, mono, onCopy, copied }: { label: string; value:
         </Button>
       )}
     </div>
+  )
+}
+
+function PixGoPaymentResult({ result, campaignName }: { result: { id: string; paymentMethod: string; url?: string }; campaignName: string }) {
+  const [copied, setCopied] = useState(false)
+  const isImage = result.url?.startsWith('data:image') || result.url?.startsWith('/9j/')
+  const isText = !isImage && result.url
+
+  const copy = async () => {
+    if (result.url) {
+      try {
+        await navigator.clipboard.writeText(result.url)
+        setCopied(true)
+        toast.success('Código PIX copiado')
+        setTimeout(() => setCopied(false), 1500)
+      } catch {
+        toast.error('Não foi possível copiar')
+      }
+    }
+  }
+
+  return (
+    <Card className="border-emerald-200 dark:border-emerald-900">
+      <CardHeader className="text-center">
+        <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-950/40">
+          <QrCode className="h-8 w-8 text-emerald-600" />
+        </div>
+        <CardTitle className="text-xl">PIX Automático</CardTitle>
+        <CardDescription>
+          {campaignName} — Pague com o seu app de banco
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isImage && (
+          <div className="flex flex-col items-center gap-3">
+            <img
+              src={result.url}
+              alt="QR Code PIX"
+              className="h-64 w-64 rounded-lg border bg-white p-3"
+            />
+            <p className="text-xs text-muted-foreground">Leia o QR Code com a sua app de banco para pagar.</p>
+          </div>
+        )}
+        {isText && (
+          <div className="space-y-2">
+            <Label>PIX Copia e Cola</Label>
+            <div className="flex items-center gap-2">
+              <Input value={result.url} readOnly className="font-mono text-xs" />
+              <Button variant="outline" size="sm" onClick={copy} className="shrink-0">
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+          </div>
+        )}
+        <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          <AlertCircle className="mb-1 h-3.5 w-3.5" /> O pagamento aguarda confirmação automática.
+        </div>
+        <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+          <p>Referência: <code className="font-mono">{result.id.slice(0, 16)}</code></p>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
