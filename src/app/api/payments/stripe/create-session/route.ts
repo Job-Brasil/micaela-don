@@ -84,17 +84,16 @@ export async function POST(req: NextRequest) {
     ip,
   })
 
-  // 4) Create Stripe Checkout Session
+  // 4) Create Stripe Checkout Session (embedded mode)
   try {
     const origin = req.headers.get('origin') ?? 'https://ajudar.charity'
-    const { sessionId, sessionUrl } = await createCheckoutSession({
+    const { sessionId, clientSecret } = await createCheckoutSession({
       internalReference,
       amount: d.amount,
       currency: d.currency,
       campaignName: campaign.name,
       customerEmail: d.customerEmail,
-      successUrl: `${origin}/pagamento/sucesso?ref=${internalReference}`,
-      cancelUrl: `${origin}/pagamento/cancelado?ref=${internalReference}`,
+      returnUrl: `${origin}/pagamento/sucesso?ref=${internalReference}`,
       metadata: {
         campaign_id: campaign.id,
         order_id: order.id,
@@ -107,7 +106,7 @@ export async function POST(req: NextRequest) {
       data: { externalId: sessionId, status: 'processing' },
     })
 
-    return json({ url: sessionUrl, reference: internalReference })
+    return json({ clientSecret, reference: internalReference, orderId: order.id })
   } catch (e) {
     // Mark order as failed
     await db.paymentOrder.update({

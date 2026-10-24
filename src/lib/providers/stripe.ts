@@ -38,38 +38,29 @@ function getStripe(): Stripe {
 
 export type CreateSessionParams = {
   internalReference: string
-  amount: number // in major currency units (e.g. euros), will be converted to cents
-  currency: string // e.g. 'eur'
+  amount: number
+  currency: string
   campaignName: string
   customerEmail: string
-  successUrl: string
-  cancelUrl: string
+  returnUrl: string
   metadata?: Record<string, string>
 }
 
 /**
- * Creates a Stripe Checkout Session for MB WAY.
- *
- * MB WAY availability:
- * - Stripe Checkout automatically displays MB WAY to PT customers when enabled.
- * - No explicit payment_method_types needed (Stripe shows available methods by country).
- * - If you want to restrict to MB WAY only, set payment_method_types: ['multibanco']
- *   BUT NOTE: 'multibanco' is Multibanco reference, NOT MB WAY. MB WAY does not
- *   have a dedicated payment_method_types value in Stripe Checkout; it appears
- *   automatically for PT customers.
- *
- * We use `payment_method_types` unset (let Stripe choose) + `payment_method_options`
- * if needed. This is the officially supported approach.
+ * Creates a Stripe Checkout Session in EMBEDDED mode.
+ * The session returns a client_secret which the client uses to mount the
+ * checkout iframe inline (no redirect).
  */
 export async function createCheckoutSession(params: CreateSessionParams): Promise<{
   sessionId: string
-  sessionUrl: string
+  clientSecret: string
 }> {
   const stripe = getStripe()
-  const amountInSmallestUnit = Math.round(params.amount * 100) // euros → cents
+  const amountInSmallestUnit = Math.round(params.amount * 100)
 
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
+    ui_mode: 'embedded',
     line_items: [
       {
         quantity: 1,
@@ -83,8 +74,6 @@ export async function createCheckoutSession(params: CreateSessionParams): Promis
         },
       },
     ],
-    // Let Stripe show available payment methods (MB WAY appears for PT customers).
-    // Do NOT set payment_method_types to ['multibanco'] — that's Multibanco, not MB WAY.
     customer_email: params.customerEmail,
     client_reference_id: params.internalReference,
     metadata: {
@@ -92,18 +81,17 @@ export async function createCheckoutSession(params: CreateSessionParams): Promis
       campaign_name: params.campaignName,
       ...params.metadata,
     },
-    success_url: params.successUrl,
-    cancel_url: params.cancelUrl,
+    return_url: params.returnUrl,
     locale: 'pt',
   })
 
-  if (!session.url) {
-    throw new Error('Stripe não devolveu URL de checkout.')
+  if (!session.client_secret) {
+    throw new Error('Stripe não devolveu client_secret.')
   }
 
   return {
     sessionId: session.id,
-    sessionUrl: session.url,
+    clientSecret: session.client_secret,
   }
 }
 
