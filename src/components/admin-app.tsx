@@ -49,9 +49,24 @@ import { apiFetch } from '@/lib/admin-client'
 
 type Tab = 'site' | 'campaigns' | 'payment' | 'pix' | 'materials' | 'donations' | 'templates' | 'channels' | 'audit'
 
+type CampaignItem = {
+  id: string
+  slug: string
+  name: string
+  status: string
+  isDefault: boolean
+  currency: string
+  country: string
+  deliveryAssetRef: string | null
+  deliveryDescription: string | null
+  createdAt: string
+}
+
 export function AdminApp({ onClose }: { onClose: () => void }) {
   const [authed, setAuthed] = useState<boolean | null>(null)
   const [tab, setTab] = useState<Tab>('site')
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>('micaela')
+  const [campaigns, setCampaigns] = useState<CampaignItem[] | null>(null)
 
   useEffect(() => {
     let active = true
@@ -63,6 +78,17 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
     }
   }, [])
 
+  useEffect(() => {
+    if (!authed) return
+    let active = true
+    apiFetch<{ campaigns: CampaignItem[] }>('/api/admin/campaigns')
+      .then((r) => active && setCampaigns(r.campaigns ?? []))
+      .catch(() => active && setCampaigns([]))
+    return () => {
+      active = false
+    }
+  }, [authed])
+
   const logout = async () => {
     try {
       await apiFetch('/api/admin/logout', { method: 'POST' })
@@ -72,14 +98,34 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
     setAuthed(false)
   }
 
+  const campaignsList = campaigns ?? []
+  const hasSelectedInList = campaignsList.some((c) => c.id === selectedCampaignId)
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      <header className="flex items-center justify-between border-b px-4 py-3">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-rose-600" />
           <span className="text-sm font-semibold">Painel de Administração</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {authed && (
+            <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
+              <SelectTrigger className="h-8 w-[180px] sm:w-[220px]" aria-label="Selecionar campanha">
+                <SelectValue placeholder="Campanha…" />
+              </SelectTrigger>
+              <SelectContent>
+                {!hasSelectedInList && (
+                  <SelectItem value={selectedCampaignId}>{selectedCampaignId}</SelectItem>
+                )}
+                {campaignsList.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           {authed && (
             <Button variant="ghost" size="sm" onClick={logout}>
               <LogOut className="mr-1 h-3.5 w-3.5" /> Sair
@@ -113,14 +159,14 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
                 <TabsTrigger value="audit" className="gap-1"><ScrollText className="h-3.5 w-3.5" /> Auditoria</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="site" className="mt-6"><SiteTab /></TabsContent>
+              <TabsContent value="site" className="mt-6"><SiteTab campaignId={selectedCampaignId} /></TabsContent>
               <TabsContent value="campaigns" className="mt-6"><CampaignsTab /></TabsContent>
-              <TabsContent value="payment" className="mt-6"><PaymentTab /></TabsContent>
-              <TabsContent value="pix" className="mt-6"><PixTab /></TabsContent>
-              <TabsContent value="materials" className="mt-6"><MaterialsTab /></TabsContent>
-              <TabsContent value="donations" className="mt-6"><DonationsTab /></TabsContent>
+              <TabsContent value="payment" className="mt-6"><PaymentTab campaignId={selectedCampaignId} /></TabsContent>
+              <TabsContent value="pix" className="mt-6"><PixTab campaignId={selectedCampaignId} /></TabsContent>
+              <TabsContent value="materials" className="mt-6"><MaterialsTab campaignId={selectedCampaignId} /></TabsContent>
+              <TabsContent value="donations" className="mt-6"><DonationsTab campaignId={selectedCampaignId} /></TabsContent>
               <TabsContent value="templates" className="mt-6"><TemplatesTab /></TabsContent>
-              <TabsContent value="channels" className="mt-6"><ChannelsTab /></TabsContent>
+              <TabsContent value="channels" className="mt-6"><ChannelsTab campaignId={selectedCampaignId} /></TabsContent>
               <TabsContent value="audit" className="mt-6"><AuditTab /></TabsContent>
             </Tabs>
           </div>
@@ -372,8 +418,9 @@ const HERO_LAYOUTS: { value: string; label: string; description: string }[] = [
   { value: 'story-inline', label: 'Imagem junto à história', description: 'Imagem aparece na secção da história.' },
 ]
 
-function SiteTab() {
-  const { data, loading } = useAdmin<{ settings: Record<string, string> }>('/api/admin/site')
+function SiteTab({ campaignId }: { campaignId: string }) {
+  const url = `/api/admin/site?campaignId=${encodeURIComponent(campaignId)}`
+  const { data, loading } = useAdmin<{ settings: Record<string, string> }>(url)
   const [vals, setVals] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
 
@@ -386,7 +433,7 @@ function SiteTab() {
   const save = async () => {
     setSaving(true)
     try {
-      await apiFetch('/api/admin/site', {
+      await apiFetch(url, {
         method: 'PUT',
         body: JSON.stringify({ settings: vals }),
       })
@@ -565,8 +612,9 @@ type PaymentCfg = {
   notes: string | null
 }
 
-function PaymentTab() {
-  const { data, loading, reload } = useAdmin<{ config: PaymentCfg | null }>('/api/admin/payment-config')
+function PaymentTab({ campaignId }: { campaignId: string }) {
+  const url = `/api/admin/payment-config?campaignId=${encodeURIComponent(campaignId)}`
+  const { data, loading, reload } = useAdmin<{ config: PaymentCfg | null }>(url)
   const cfg = data?.config ?? null
   const [form, setForm] = useState<Partial<PaymentCfg>>({})
   const [saving, setSaving] = useState(false)
@@ -579,7 +627,7 @@ function PaymentTab() {
     setSaving(true)
     try {
       const body = { ...form, ...patch }
-      await apiFetch('/api/admin/payment-config', { method: 'PUT', body: JSON.stringify(body) })
+      await apiFetch(url, { method: 'PUT', body: JSON.stringify(body) })
       toast.success('Configuração guardada', { description: 'Dados bancários atualizados.' })
       reload()
     } catch (e) {
@@ -640,8 +688,10 @@ type PixCfg = {
   notes?: string | null
 }
 
-function PixTab() {
-  const { data, loading, reload } = useAdmin<{ config: PixCfg | null }>('/api/admin/pix')
+function PixTab({ campaignId }: { campaignId: string }) {
+  const url = `/api/admin/pix?campaignId=${encodeURIComponent(campaignId)}`
+  const previewUrl = `/api/admin/pix/preview?campaignId=${encodeURIComponent(campaignId)}`
+  const { data, loading, reload } = useAdmin<{ config: PixCfg | null }>(url)
   const cfg = data?.config ?? null
   const [beneficiary, setBeneficiary] = useState('')
   const [notes, setNotes] = useState('')
@@ -663,7 +713,7 @@ function PixTab() {
         r.onerror = reject
         r.readAsDataURL(file)
       })
-      await apiFetch('/api/admin/pix', {
+      await apiFetch(url, {
         method: 'POST',
         body: JSON.stringify({ qrImage: dataUrl, beneficiaryName: beneficiary, notes }),
       })
@@ -679,7 +729,7 @@ function PixTab() {
   const save = async (patch: Partial<PixCfg>) => {
     setSaving(true)
     try {
-      await apiFetch('/api/admin/pix', {
+      await apiFetch(url, {
         method: 'PUT',
         body: JSON.stringify({ beneficiaryName: beneficiary, notes, ...patch }),
       })
@@ -726,7 +776,7 @@ function PixTab() {
             }}
           />
           {cfg?.qrPresent && (
-            <img src="/api/admin/pix/preview" alt="Pré-visualização do QR" className="h-24 w-24 rounded border bg-white p-1" />
+            <img src={previewUrl} alt="Pré-visualização do QR" className="h-24 w-24 rounded border bg-white p-1" />
           )}
         </div>
 
@@ -795,8 +845,9 @@ function MaterialCover({ material, className }: { material: Pick<Material, 'cove
   )
 }
 
-function MaterialsTab() {
-  const { data, loading, reload } = useAdmin<{ materials: Material[] }>('/api/admin/materials')
+function MaterialsTab({ campaignId }: { campaignId: string }) {
+  const url = `/api/admin/materials?campaignId=${encodeURIComponent(campaignId)}`
+  const { data, loading, reload } = useAdmin<{ materials: Material[] }>(url)
   const [form, setForm] = useState({
     name: '',
     category: 'foto',
@@ -813,7 +864,7 @@ function MaterialsTab() {
     e.preventDefault()
     setCreating(true)
     try {
-      await apiFetch('/api/admin/materials', {
+      await apiFetch(url, {
         method: 'POST',
         body: JSON.stringify({
           name: form.name,
@@ -837,7 +888,7 @@ function MaterialsTab() {
 
   const patch = async (m: Material, patch: Partial<Material>) => {
     try {
-      await apiFetch(`/api/admin/materials/${m.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+      await apiFetch(`/api/admin/materials/${m.id}?campaignId=${encodeURIComponent(campaignId)}`, { method: 'PATCH', body: JSON.stringify(patch) })
       toast.success('Atualizado')
       reload()
     } catch (e) {
@@ -848,7 +899,7 @@ function MaterialsTab() {
   const remove = async (m: Material) => {
     if (!confirm(`Eliminar "${m.name}"?`)) return
     try {
-      await apiFetch(`/api/admin/materials/${m.id}`, { method: 'DELETE' })
+      await apiFetch(`/api/admin/materials/${m.id}?campaignId=${encodeURIComponent(campaignId)}`, { method: 'DELETE' })
       toast.success('Eliminado')
       reload()
     } catch (e) {
@@ -978,6 +1029,7 @@ function MaterialsTab() {
       {editing && (
         <MaterialEditDialog
           material={editing}
+          campaignId={campaignId}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
@@ -989,7 +1041,7 @@ function MaterialsTab() {
   )
 }
 
-function MaterialEditDialog({ material, onClose, onSaved }: { material: Material; onClose: () => void; onSaved: () => void }) {
+function MaterialEditDialog({ material, campaignId, onClose, onSaved }: { material: Material; campaignId: string; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({
     name: material.name,
     category: material.category,
@@ -1004,7 +1056,7 @@ function MaterialEditDialog({ material, onClose, onSaved }: { material: Material
   const save = async () => {
     setSaving(true)
     try {
-      await apiFetch(`/api/admin/materials/${material.id}`, {
+      await apiFetch(`/api/admin/materials/${material.id}?campaignId=${encodeURIComponent(campaignId)}`, {
         method: 'PATCH',
         body: JSON.stringify({
           name: form.name,
@@ -1098,13 +1150,14 @@ type Donation = {
   createdAt: string
 }
 
-function DonationsTab() {
-  const { data, loading, reload } = useAdmin<{ donations: Donation[] }>('/api/admin/donations')
+function DonationsTab({ campaignId }: { campaignId: string }) {
+  const url = `/api/admin/donations?campaignId=${encodeURIComponent(campaignId)}`
+  const { data, loading, reload } = useAdmin<{ donations: Donation[] }>(url)
   if (loading) return <LoadingRow />
   const list = data?.donations ?? []
   const patch = async (d: Donation, body: object) => {
     try {
-      await apiFetch(`/api/admin/donations/${d.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      await apiFetch(`/api/admin/donations/${d.id}?campaignId=${encodeURIComponent(campaignId)}`, { method: 'PATCH', body: JSON.stringify(body) })
       toast.success('Donativo atualizado')
       reload()
     } catch (e) {
@@ -1113,7 +1166,7 @@ function DonationsTab() {
   }
   const sendThanks = async (d: Donation) => {
     try {
-      await apiFetch(`/api/admin/donations/${d.id}/thankyou`, { method: 'POST', body: JSON.stringify({ channel: 'email' }) })
+      await apiFetch(`/api/admin/donations/${d.id}/thankyou?campaignId=${encodeURIComponent(campaignId)}`, { method: 'POST', body: JSON.stringify({ channel: 'email' }) })
       toast.success('Agradecimento em fila', { description: 'Envio futuro.' })
       reload()
     } catch (e) {
@@ -1260,13 +1313,14 @@ type Channel = {
   published: boolean
 }
 
-function ChannelsTab() {
-  const { data, loading, reload } = useAdmin<{ channels: Channel[] }>('/api/admin/contact-channels')
+function ChannelsTab({ campaignId }: { campaignId: string }) {
+  const url = `/api/admin/contact-channels?campaignId=${encodeURIComponent(campaignId)}`
+  const { data, loading, reload } = useAdmin<{ channels: Channel[] }>(url)
   if (loading) return <LoadingRow />
   const list = data?.channels ?? []
   const patch = async (c: Channel, body: Partial<Channel>) => {
     try {
-      await apiFetch(`/api/admin/contact-channels/${c.id}`, { method: 'PUT', body: JSON.stringify(body) })
+      await apiFetch(`/api/admin/contact-channels/${c.id}?campaignId=${encodeURIComponent(campaignId)}`, { method: 'PUT', body: JSON.stringify(body) })
       toast.success('Canal atualizado')
       reload()
     } catch (e) {
@@ -1338,19 +1392,6 @@ function AuditTab() {
 }
 
 // ---------- Campaigns tab ----------
-type CampaignItem = {
-  id: string
-  slug: string
-  name: string
-  status: string
-  isDefault: boolean
-  currency: string
-  country: string
-  deliveryAssetRef: string | null
-  deliveryDescription: string | null
-  createdAt: string
-}
-
 function CampaignsTab() {
   const { data, loading, reload } = useAdmin<{ campaigns: CampaignItem[] }>('/api/admin/campaigns')
   const [showCreate, setShowCreate] = useState(false)

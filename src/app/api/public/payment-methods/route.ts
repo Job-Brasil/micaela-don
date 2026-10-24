@@ -3,12 +3,11 @@ import { db } from '@/lib/db'
 import { json } from '@/lib/api'
 
 /**
- * Returns which payment methods are available for a given campaign.
- * This is determined by:
- * - Stripe: STRIPE_SECRET_KEY env is set → mbway available
- * - PixGo: PIXGO_API_KEY env is set → pix_automatic available (but always disabled for users until approval)
- * - PIX manual: pix_config exists with approved+published → pix_manual available
- * - Bank transfer: payment_config exists with approved+published → bank_transfer available
+ * Returns which payment methods are available.
+ *
+ * Methods are NOT locked to the campaign's currency — donors can choose any
+ * available method regardless of campaign default. Each method has its own
+ * compatible currency, and the donor selects the currency they want.
  *
  * No secrets are exposed — only boolean availability flags.
  */
@@ -17,6 +16,7 @@ export async function GET(req: NextRequest) {
   const campaignId = searchParams.get('campaignId') ?? 'micaela'
 
   const stripeConfigured = !!process.env.STRIPE_SECRET_KEY
+  const pixgoConfigured = !!process.env.PIXGO_API_KEY
 
   let pixManualAvailable = false
   let bankTransferAvailable = false
@@ -65,22 +65,22 @@ export async function GET(req: NextRequest) {
     methods: {
       mbway: {
         available: stripeConfigured,
-        currency: 'EUR',
+        currencies: ['EUR'],
         reason: stripeConfigured ? null : 'Stripe não configurado',
       },
       pix_automatic: {
-        available: false,
-        currency: 'BRL',
-        reason: 'PIX automático em validação técnica e comercial',
+        available: pixgoConfigured,
+        currencies: ['BRL'],
+        reason: pixgoConfigured ? null : 'PixGo não configurado',
       },
       pix_manual: {
         available: pixManualAvailable,
-        currency: 'BRL',
+        currencies: ['BRL'],
         beneficiaryName: pixBeneficiaryName,
       },
       bank_transfer: {
         available: bankTransferAvailable,
-        currency: 'EUR',
+        currencies: ['EUR'],
         holder: bankHolder,
         bank: bankName,
         iban: bankIban,

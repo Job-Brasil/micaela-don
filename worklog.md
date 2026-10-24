@@ -204,3 +204,93 @@ Stage Summary:
 - Nenhuma alteração a rotas API, src/lib/*, prisma/*, ou public-site.tsx — só admin-app.tsx foi reescrito.
 - Funcionalidades preservadas: EUR (config + approve + publish), PIX (upload + preview + approve + publish), Materiais (CRUD + approve + publish + NOVO coverImageRef/coverAlt/description + Editar), Donativos (confirm + reject + thankyou), Modelos (CRUD), Canais (enabled + published), Auditoria (read-only).
 - NOVAS funcionalidades: hero.layout Select, 3 campos de upload de imagens (banner, retrato, história) com previews via ImageUploader, capa+descrição+alt para materiais, dialog de edição de material.
+
+---
+Task ID: DONATION-FLOW-V3
+Agent: full-stack-developer
+Task: Reescrever donation-flow.tsx — Stripe Embedded Checkout (sem redirect), PixGo ativo, moeda não bloqueada à campanha.
+
+Work Log:
+- Lidos: worklog.md (contexto do projeto Micaela), src/components/donation-flow.tsx (versão anterior), src/lib/i18n.ts (sistema de tradução), src/lib/providers/stripe.ts (já cria sessões embedded com ui_mode:'embedded' e devolve clientSecret), src/app/api/payments/stripe/create-session/route.ts (devolve { clientSecret, reference, orderId }), src/app/api/payments/pixgo/create/route.ts (devolve { reference, paymentId, qrCode, qrCodeImage, expiresAt }), src/app/api/public/payment-methods/route.ts (já retorna currencies: string[]), src/app/api/public/donation-intent/route.ts (valida amountMinor server-side).
+- Inspetado node_modules/@stripe/stripe-js (v10.1.0): a tipagem TypeScript expõe o método como `createEmbeddedCheckoutPage` (renomeado em v10); `initEmbeddedCheckout` (legado, especificado na task) pode ainda existir no runtime Stripe.js carregado de js.stripe.com. Implementação defensiva: deteta ambos os nomes em runtime via cast a `unknown`, prefere `initEmbeddedCheckout` se existir, fallback para `createEmbeddedCheckoutPage`.
+- ALTERAÇÃO 1 — Stripe Embedded Checkout inline (SEM redirect):
+  • Após criar a intenção de donativo (POST /api/public/donation-intent) com paymentMethod='mbway', o fluxo chama POST /api/payments/stripe/create-session e recebe { clientSecret, reference, orderId }.
+  • Carrega Stripe.js via `loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY)`.
+  • Inicializa o checkout embedded via `initEmbeddedCheckout({ clientSecret })` (ou `createEmbeddedCheckoutPage` em v10+) e faz `checkout.mount('#stripe-checkout-container')`.
+  • O iframe do Stripe é renderizado inline numa div `#stripe-checkout-container` dentro de um Card, na mesma página (sem redirect para checkout.stripe.com).
+  • Estados: `stripeLoading` (spinner enquanto Stripe.js inicializa) e `embeddedCheckoutActive` (Card com o container).
+  • Cleanup no unmount: `useEffect(() => () => checkoutRef.current?.destroy())` via ref (StripeEmbeddedCheckout tipado).
+  • Fallback: se NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY não configurada, mostra toast de erro (a API já não devolve `url`, então redirect direto para checkout.stripe.com não é possível).
+  • Conclusão do pagamento: o próprio iframe do Stripe redireciona para return_url (/pagamento/sucesso?ref=...) configurado server-side.
+- ALTERAÇÃO 2 — PixGo ativo (PIX automático inline):
+  • Quando paymentMethod='pix_automatic', após criar a intenção, o fluxo chama POST /api/payments/pixgo/create com { campaignId, amount, currency:'BRL', customerEmail, customerName, customerCpf, description }.
+  • Resposta { reference, paymentId, qrCode, qrCodeImage, expiresAt } guardada em state `pixgoResult`.
+  • Novo componente PixGoPaymentResult: mostra o QR Code como `<img src="data:image/png;base64,{qrCodeImage}">` quando qrCodeImage existe (base64 PNG); mostra o código Copia e Cola com botão de copiar quando qrCode existe (texto copyable + Check verde após cópia); mostra expiration em formato pt-PT quando expiresAt existe; mensagem de "aguarda confirmação automática".
+  • Campo CPF (d-cpf) só aparece condicionalmente quando `cpfRequired = paymentMethod === 'pix_automatic'`; validação 11 ou 14 dígitos; enviado ao endpoint como digits-only via `cpf.replace(/\D/g, '')`.
+- ALTERAÇÃO 3 — Moeda não bloqueada à campanha:
+  • Tipo PaymentMethodsResponse atualizado: `currency: string` → `currencies: string[]` em todos os 4 métodos (mbway, pix_automatic, pix_manual, bank_transfer).
+  • Filtro de métodos disponíveis agora é `info.available && info.currencies.includes(currency)` (antes era `info.currency === currency`).
+  • Doador escolhe EUR/BRL livremente via dois botões no topo da secção de valor; o detetor de país sugere uma moeda inicial mas o utilizador pode mudar a qualquer momento.
+  • Lista de métodos é recalculada em useMemo quando currency muda; auto-seleciona o primeiro método disponível.
+- PRESERVADO integralmente:
+  • Sistema i18n (translate, detectCountry, detectLocale, formatAmount, COUNTRIES, getCountry, Locale).
+  • Seletor de país com bandeiras (Select com flags emoji).
+  • Seletor de idioma (PT/BR/EN com globe icon).
+  • Pack Media checkbox (com hint e note traduzidos).
+  • Validação server-side de amountMinor (POST /api/public/donation-intent continua a receber e validar amountMinor).
+  • ManualPaymentResult para pix_manual e bank_transfer (mantido sem alterações, lê methods.methods.bank_transfer e methods.methods.pix_manual).
+  • CopyRow e SummaryRow componentes (inalterados).
+  • Estrutura de página única (não multi-etapa); estados pós-submit geridos por useState e renderização condicional.
+- NOVAS chaves i18n adicionadas (pt-PT, pt-BR, en): 'stripe.loading', 'stripe.embedded.title', 'stripe.embedded.desc', 'pix.copiaecola', 'pixgo.waiting'.
+- .env.example: adicionado NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY (pk_test_.../pk_live_...) documentado como safe para frontend; mantidas STRIPE_SECRET_KEY e STRIPE_WEBHOOK_SECRET como server-only.
+- Validação:
+  • `bun run lint` → 0 erros, 0 warnings (exit 0).
+  • `npx tsc --noEmit --skipLibCheck` → 0 erros (exit 0); confirma tipagem correta de StripeEmbeddedCheckout, loadStripe, PaymentMethodsResponse e PixGoResult.
+  • dev.log apresenta erro interno do Turbopack ("corrupted database or bug" no .next/dev cache) — não relacionado com as alterações (era pré-existente no cache de compilação); não afeta o código em src/.
+
+Stage Summary:
+- donation-flow.tsx reescrito com 3 alterações principais: (1) Stripe Embedded Checkout inline sem redirect via loadStripe + initEmbeddedCheckout/createEmbeddedCheckoutPage + mount em #stripe-checkout-container + destroy no unmount; (2) PixGo ativo com fluxo POST /api/payments/pixgo/create e QR inline (base64 + Copia e Cola com copy button) + campo CPF condicional; (3) moeda não bloqueada à campanha (filtro por currencies.includes(currency)).
+- Tipo PaymentMethodsResponse atualizado para usar currencies: string[] em todos os métodos.
+- Componente permanece 'use client'; imports i18n preservados; ManualPaymentResult, CopyRow e SummaryRow inalterados.
+- Lint e type-check ambos limpos. Pronto para preview.
+
+---
+Task ID: ADMIN-CAMPAIGN-FILTER
+Agent: full-stack-developer
+Task: Adicionar seletor de campanha no header do painel admin; todas as tabs operam sobre a campanha selecionada.
+
+Work Log:
+- Lidos worklog.md (contexto do projeto Micaela — multi-campanha, 'micaela' é id+slug da campanha default segundo seed.ts e schema.prisma) e src/components/admin-app.tsx (1550 linhas, 'use client', AdminApp com Tabs: site, campaigns, payment, pix, materials, donations, templates, channels, audit; hook useAdmin(url) refaz fetch quando url muda via useCallback + useEffect[reload]).
+- Confirmado contrato: GET /api/admin/campaigns devolve { campaigns: CampaignItem[] } já usado pelo CampaignsTab existente; campaignId é o campo id (string, default 'micaela' no schema).
+- ALTERAÇÃO 1 — Estado e fetch de campanhas no nível AdminApp:
+  • Adicionado `selectedCampaignId` (default 'micaela') e `campaigns` (CampaignItem[] | null) no estado do AdminApp.
+  • Novo useEffect[authed]: quando authed===true, faz apiFetch<{ campaigns: CampaignItem[] }>('/api/admin/campaigns') e popula `campaigns`; em caso de erro, fallback para [] (não quebra a UI).
+  • Tipo `CampaignItem` movido do topo da secção CampaignsTab (linha ~1341) para junto da declaração de `type Tab` (topo do ficheiro) — partilhado entre AdminApp (selector) e CampaignsTab (lista); sem duplicação.
+- ALTERAÇÃO 2 — Selector `<Select>` no header:
+  • Renderizado entre o título e os botões Sair/Fechar; só visível quando authed===true.
+  • SelectTrigger h-8 w-[180px] sm:w-[220px] (mobile-first responsivo); aria-label="Selecionar campanha".
+  • Renderiza cada campanha como SelectItem value={c.id} label={c.name}.
+  • Fallback: se `selectedCampaignId` não estiver na lista (ex.: 'micaela' ainda não seeded, ou ainda a carregar), renderiza um SelectItem extra com value={selectedCampaignId} para que o trigger mostre sempre um valor válido (evita trigger vazio/placeholder confuso).
+  • Header alterado de `flex items-center` para `flex flex-wrap items-center justify-between gap-2` para evitar overflow horizontal em mobile quando o selector é adicionado.
+- ALTERAÇÃO 3 — Passar `campaignId` como prop a cada tab filtrada:
+  • SiteTab, PaymentTab, PixTab, MaterialsTab, DonationsTab, ChannelsTab: assinatura alterada para `({ campaignId }: { campaignId: string })`.
+  • Cada tab constrói `const url = '/api/admin/<endpoint>?campaignId=' + encodeURIComponent(campaignId)` e passa-o ao useAdmin (GET) e a TODOS os pedidos de mutação (POST/PUT/PATCH/DELETE) — incluindo /thankyou, /materials/[id], /contact-channels/[id], /pix/preview — para que o backend possa escopar mutações por campanha quando implementar suporte.
+  • PixTab: também aplica campaignId ao previewUrl (`/api/admin/pix/preview?campaignId=…`) usado no `<img>` de preview do QR.
+  • MaterialsTab: passou campaignId também ao MaterialEditDialog (nova prop) — PATCH do dialog usa o mesmo query param.
+  • Tabs NÃO filtradas preservadas: CampaignsTab, TemplatesTab, AuditTab continuam sem campaignId (lista global/auditoria).
+- ALTERAÇÃO 4 — Recarga automática ao mudar de campanha:
+  • Como o `url` passado a useAdmin depende de campaignId, quando o admin muda o selector: setSelectedCampaignId → re-render → novo URL → useCallback recria reload → useEffect[reload] reexecuta fetch. Sem código extra necessário.
+  • Como Radix Tabs monta apenas a TabsContent ativa, mudar de campanha num tab inativo não refaz fetch desnecessário; ao mudar para um tab, este monta fresh e usa o campaignId atual.
+- VALIDAÇÃO:
+  • `bun run lint` → 0 erros, 0 warnings (exit 0).
+  • Estrutura TypeScript válida (MultiEdit aplicou 18 edits atómicos sem conflitos; CampaignItem definido uma única vez no topo; todas as chamadas de apiFetch agora usam a variável `url` ou template literals com encodeURIComponent(campaignId)).
+  • dev.log apresenta erro pré-existente de Turbopack ("corrupted database or bug" no .next/dev cache) — não relacionado com as alterações (já documentado no worklog DONATION-FLOW-V3); não afeta o código em src/.
+
+Stage Summary:
+- admin-app.tsx mantém-se 'use client'; ~1591 linhas; lint limpo.
+- Selector de campanha funcional no header do painel admin (default 'micaela'), com fallback graceful quando a campanha selecionada não está na lista.
+- 6 tabs passam campaignId ao backend via query string `?campaignId=` em GET e mutações: SiteTab, PaymentTab, PixTab, MaterialsTab (+ MaterialEditDialog), DonationsTab, ChannelsTab.
+- 3 tabs preservadas sem filtragem (CampaignsTab, TemplatesTab, AuditTab) — comportamento global mantido.
+- Autenticação (LoginView + /api/admin/session + /api/admin/login + /api/admin/logout) preservada 100%.
+- Funcionalidades existentes (CRUD materiais + dialog, EUR approve+publish, PIX upload+preview+approve+publish, Donations confirm+reject+thankyou, Channels enable+publish, Templates CRUD, Audit read-only, Campaigns CRUD + edit dialog) preservadas.
+- Pronto para o backend implementar suporte a `campaignId` nos endpoints (já recebe o query param; hoje é ignorado — comportamento padrão mantém-se scoped à campanha default 'micaela').

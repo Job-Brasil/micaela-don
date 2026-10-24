@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { loadStripe, type StripeEmbeddedCheckout } from '@stripe/stripe-js'
 import { toast } from 'sonner'
 import {
   Heart,
@@ -37,12 +38,12 @@ import {
 
 type PaymentMethodsResponse = {
   methods: {
-    mbway: { available: boolean; currency: string; reason?: string | null }
-    pix_automatic: { available: boolean; currency: string; reason?: string | null }
-    pix_manual: { available: boolean; currency: string; beneficiaryName?: string | null }
+    mbway: { available: boolean; currencies: string[]; reason?: string | null }
+    pix_automatic: { available: boolean; currencies: string[]; reason?: string | null }
+    pix_manual: { available: boolean; currencies: string[]; beneficiaryName?: string | null }
     bank_transfer: {
       available: boolean
-      currency: string
+      currencies: string[]
       holder?: string | null
       bank?: string | null
       iban?: string | null
@@ -54,6 +55,14 @@ type PaymentMethodsResponse = {
 }
 
 type MethodKey = 'mbway' | 'pix_automatic' | 'pix_manual' | 'bank_transfer'
+
+type PixGoResult = {
+  reference: string
+  paymentId: string
+  qrCode: string | null
+  qrCodeImage: string | null
+  expiresAt: string | null
+}
 
 const METHOD_ICONS: Record<MethodKey, typeof Landmark> = {
   mbway: CreditCard,
@@ -74,7 +83,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const [locale, setLocale] = useState<Locale>('pt-PT')
   const [country, setCountry] = useState('PT')
 
-  // Form state — all in one page
+  // Form state — single page, no multi-step
   const [currency, setCurrency] = useState<'EUR' | 'BRL'>('EUR')
   const [selectedAmount, setSelectedAmount] = useState<number | null>(null)
   const [customAmount, setCustomAmount] = useState('')
@@ -91,11 +100,18 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
     paymentMethod: string
     status: string
   } | null>(null)
-  const [stripeRedirectUrl, setStripeRedirectUrl] = useState<string | null>(null)
+
+  // Stripe embedded checkout state
+  const [embeddedCheckoutActive, setEmbeddedCheckoutActive] = useState(false)
+  const [stripeLoading, setStripeLoading] = useState(false)
+  const checkoutRef = useRef<StripeEmbeddedCheckout | null>(null)
+
+  // PixGo inline QR result
+  const [pixgoResult, setPixgoResult] = useState<PixGoResult | null>(null)
 
   const t = useCallback((key: string, params?: Record<string, string | number>) => translate(locale, key, params), [locale])
 
-  // Init: detect locale + country
+  // Detect locale + country on mount (does NOT lock currency to campaign — donor can switch freely)
   useEffect(() => {
     const l = detectLocale()
     const c = detectCountry()
@@ -112,7 +128,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
     }
   }, [locale])
 
-  // Fetch payment methods
+  // Fetch payment methods (currency is selected by the donor, not forced by the campaign)
   useEffect(() => {
     fetch(`/api/public/payment-methods?campaignId=${encodeURIComponent(campaignId)}`)
       .then((r) => r.json())
@@ -120,6 +136,20 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
       .catch(() => {})
       .finally(() => setLoadingMethods(false))
   }, [campaignId])
+
+  // Cleanup embedded checkout when component unmounts
+  useEffect(() => {
+    return () => {
+      if (checkoutRef.current) {
+        try {
+          checkoutRef.current.destroy()
+        } catch {
+          // ignore — may already be destroyed
+        }
+        checkoutRef.current = null
+      }
+    }
+  }, [])
 
   const handleCountryChange = (c: string) => {
     setCountry(c)
@@ -146,10 +176,11 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const limits = methods?.limits?.[currency] ?? { minMinor: 100, maxMinor: 1000000 }
   const suggested = methods?.suggestedAmounts?.[currency] ?? (currency === 'BRL' ? [20, 50, 100, 200] : [5, 10, 20, 50])
 
+  // Available methods filtered by currency support (currency is NOT locked to the campaign)
   const availableMethods = useMemo(() => {
     if (!methods) return []
     return Object.entries(methods.methods)
-      .filter(([, info]) => info.available && info.currency === currency)
+      .filter(([, info]) => info.available && Array.isArray(info.currencies) && info.currencies.includes(currency))
       .map(([key, info]) => ({ key: key as MethodKey, ...info }))
   }, [methods, currency])
 
@@ -169,6 +200,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const nameValid = name.trim().length >= 2
   const emailValid = /\S+@\S+\.\S+/.test(email)
   const whatsappValid = !whatsapp || /^\+?\d{8,15}$/.test(whatsapp.replace(/[\s\-()]/g, ''))
+  // CPF is required ONLY for pix_automatic (PixGo requires it)
   const cpfRequired = paymentMethod === 'pix_automatic'
   const cpfValid = !cpfRequired || /^\d{11}$|^\d{14}$/.test(cpf.replace(/\D/g, ''))
 
@@ -177,8 +209,8 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const submit = async () => {
     if (!canSubmit) return
     setSubmitting(true)
-    setStripeRedirectUrl(null)
     try {
+      // 1) Create donation intent (server-side validates amountMinor, currency, method compatibility)
       const res = await fetch('/api/public/donation-intent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -197,11 +229,11 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data?.error ?? 'Erro')
+      if (!res.ok) throw new Error(data?.error ?? 'Erro ao registar intenção')
 
       setResult({ id: data.id, paymentMethod: data.paymentMethod, status: data.status })
 
-      // If MB WAY, create Stripe session and redirect
+      // 2a) MB WAY → Stripe Embedded Checkout (no redirect)
       if (paymentMethod === 'mbway') {
         const stripeRes = await fetch('/api/payments/stripe/create-session', {
           method: 'POST',
@@ -215,15 +247,92 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           }),
         })
         const stripeData = await stripeRes.json()
-        if (stripeData.url) {
-          // Stripe Checkout is hosted — redirect is the official flow.
-          setStripeRedirectUrl(stripeData.url)
-          window.location.href = stripeData.url
-          return
+        if (!stripeRes.ok || !stripeData.clientSecret) {
+          throw new Error(stripeData?.error ?? 'Não foi possível iniciar o pagamento Stripe.')
         }
+
+        // Fallback: if no publishable key is configured, we cannot mount embedded checkout.
+        // The API no longer returns a `url`, so we cannot redirect to checkout.stripe.com.
+        if (typeof window !== 'undefined') {
+          const pk = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+          if (!pk) {
+            toast.error('Stripe não configurado para checkout embutido. Contacte o suporte.')
+            return
+          }
+
+          setStripeLoading(true)
+          try {
+            const stripe = await loadStripe(pk)
+            if (!stripe) {
+              throw new Error('Stripe indisponível')
+            }
+
+            // Stripe.js exposes initEmbeddedCheckout (older) or createEmbeddedCheckoutPage (v10+).
+            // Try both at runtime to be resilient across versions.
+            const stripeAny = stripe as unknown as {
+              initEmbeddedCheckout?: (opts: { clientSecret: string }) => Promise<StripeEmbeddedCheckout>
+              createEmbeddedCheckoutPage?: (opts: { clientSecret: string }) => Promise<StripeEmbeddedCheckout>
+            }
+
+            let checkout: StripeEmbeddedCheckout
+            if (typeof stripeAny.initEmbeddedCheckout === 'function') {
+              checkout = await stripeAny.initEmbeddedCheckout({ clientSecret: stripeData.clientSecret })
+            } else if (typeof stripeAny.createEmbeddedCheckoutPage === 'function') {
+              checkout = await stripeAny.createEmbeddedCheckoutPage({ clientSecret: stripeData.clientSecret })
+            } else {
+              throw new Error('Stripe embedded checkout indisponível nesta versão.')
+            }
+
+            // Destroy any previous instance before mounting a new one
+            if (checkoutRef.current) {
+              try {
+                checkoutRef.current.destroy()
+              } catch {
+                // ignore
+              }
+            }
+            checkout.mount('#stripe-checkout-container')
+            checkoutRef.current = checkout
+            setEmbeddedCheckoutActive(true)
+            // On success, Stripe redirects to return_url (/pagamento/sucesso?ref=...) automatically.
+          } finally {
+            setStripeLoading(false)
+          }
+        }
+        return
       }
 
-      // For manual methods, stay on page and show the payment area inline
+      // 2b) PixGo → create PIX charge, render QR inline
+      if (paymentMethod === 'pix_automatic') {
+        const pixgoRes = await fetch('/api/payments/pixgo/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            campaignId,
+            amount: amountMinor / 100,
+            currency: 'BRL',
+            customerEmail: email.trim(),
+            customerName: name.trim(),
+            customerCpf: cpf.replace(/\D/g, ''),
+            description: `Apoio — ${campaignName}`,
+          }),
+        })
+        const pixgoData = await pixgoRes.json()
+        if (!pixgoRes.ok) {
+          throw new Error(pixgoData?.error ?? 'Não foi possível criar o pagamento PIX.')
+        }
+        setPixgoResult({
+          reference: pixgoData.reference,
+          paymentId: pixgoData.paymentId,
+          qrCode: pixgoData.qrCode ?? null,
+          qrCodeImage: pixgoData.qrCodeImage ?? null,
+          expiresAt: pixgoData.expiresAt ?? null,
+        })
+        toast.success(t('result.title'), { description: t('pixgo.waiting') })
+        return
+      }
+
+      // Manual methods (pix_manual, bank_transfer) — inline result with QR or IBAN
       toast.success(t('result.title'), { description: t('result.desc') })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao submeter')
@@ -240,19 +349,55 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
     )
   }
 
-  // If redirected to Stripe, show loading state
-  if (stripeRedirectUrl) {
+  // Stripe embedded checkout is loading (Stripe.js being initialized)
+  if (stripeLoading) {
     return (
       <Card className="border-stone-200/70 dark:border-stone-800/70">
         <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
           <Loader2 className="h-8 w-8 animate-spin text-rose-600" />
-          <p className="text-sm font-medium">A redirecionar para o Stripe…</p>
+          <p className="text-sm font-medium">{t('stripe.loading')}</p>
         </CardContent>
       </Card>
     )
   }
 
-  // Result view for manual methods (PIX manual, IBAN)
+  // Stripe embedded checkout is mounted inline — show the iframe container
+  if (embeddedCheckoutActive) {
+    return (
+      <Card className="overflow-hidden border-stone-200/70 shadow-sm dark:border-stone-800/70">
+        <CardHeader className="border-b bg-gradient-to-r from-rose-50 to-amber-50/50 pb-5 dark:from-rose-950/20 dark:to-amber-950/10">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <ShieldCheck className="h-5 w-5 text-rose-600" />
+            {t('stripe.embedded.title')}
+          </CardTitle>
+          <CardDescription>
+            {campaignName} — {t('stripe.embedded.desc')}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          {/* Stripe Embedded Checkout iframe mounts here */}
+          <div
+            id="stripe-checkout-container"
+            className="min-h-[520px] w-full"
+            aria-label="Stripe embedded checkout"
+          />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // PixGo result — inline QR + Copia e Cola
+  if (pixgoResult) {
+    return (
+      <PixGoPaymentResult
+        result={pixgoResult}
+        campaignName={campaignName}
+        t={t}
+      />
+    )
+  }
+
+  // Manual methods (PIX manual, IBAN) — existing inline result
   if (result && (result.paymentMethod === 'pix_manual' || result.paymentMethod === 'bank_transfer')) {
     return (
       <ManualPaymentResult
@@ -309,10 +454,10 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
       </CardHeader>
 
       <CardContent className="space-y-6 p-6">
-        {/* Value selection */}
+        {/* Currency + Value selection (donor chooses EUR or BRL freely) */}
         <section>
           <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {t('donate.amount')}
+            {t('donate.currency')}
           </Label>
           <div className="mb-3 flex gap-2">
             <Button
@@ -332,6 +477,9 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
               R$ BRL
             </Button>
           </div>
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {t('donate.amount')}
+          </Label>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {suggested.map((amt) => (
               <button
@@ -398,9 +546,10 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
             <Label htmlFor="d-whats">{t('donate.whatsapp')}</Label>
             <Input id="d-whats" type="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} maxLength={40} placeholder="+351 912 345 678" />
           </div>
+          {/* CPF only required for pix_automatic (PixGo) */}
           {cpfRequired && (
             <div className="grid gap-1.5">
-              <Label htmlFor="d-cpf">{t('donate.cpf')}</Label>
+              <Label htmlFor="d-cpf">{t('donate.cpf')} *</Label>
               <Input id="d-cpf" value={cpf} onChange={(e) => setCpf(e.target.value)} maxLength={18} placeholder="000.000.000-00" />
             </div>
           )}
@@ -408,7 +557,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
 
         <Separator />
 
-        {/* Payment method */}
+        {/* Payment method (filtered by selected currency) */}
         <section>
           <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {t('donate.method')}
@@ -446,8 +595,9 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         <span className="text-sm font-semibold">{label}</span>
-                        {m.key === 'pix_manual' && <Badge variant="secondary" className="text-[10px] px-1.5">Manual</Badge>}
-                        {m.key === 'bank_transfer' && <Badge variant="secondary" className="text-[10px] px-1.5">SEPA</Badge>}
+                        {m.key === 'pix_manual' && <Badge variant="secondary" className="px-1.5 text-[10px]">Manual</Badge>}
+                        {m.key === 'bank_transfer' && <Badge variant="secondary" className="px-1.5 text-[10px]">SEPA</Badge>}
+                        {m.key === 'pix_automatic' && <Badge variant="secondary" className="px-1.5 text-[10px]">Auto</Badge>}
                       </div>
                       <p className="truncate text-xs text-muted-foreground">{desc}</p>
                     </div>
@@ -461,7 +611,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
 
         <Separator />
 
-        {/* Pack Media */}
+        {/* Pack Media (optional) */}
         <section>
           <label className="flex cursor-pointer items-start gap-3 rounded-xl border-2 p-4 transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10">
             <Checkbox
@@ -482,6 +632,21 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
 
         <Separator />
 
+        {/* Message (optional) */}
+        <section className="grid gap-1.5">
+          <Label htmlFor="d-msg" className="text-xs text-muted-foreground">Mensagem (opcional)</Label>
+          <Textarea
+            id="d-msg"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            maxLength={1000}
+            rows={2}
+            placeholder="Deixe uma palavra de apoio…"
+          />
+        </section>
+
+        <Separator />
+
         {/* Summary + Submit */}
         <section>
           <div className="mb-4 rounded-xl border bg-muted/30 p-4">
@@ -491,7 +656,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
               <SummaryRow label={t('donate.summary.pack')} value={wantPackMedia ? t('donate.yes') : t('donate.no')} />
             </div>
           </div>
-          <div className="mb-4 flex items-start gap-2 rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
+          <div className="mb-4 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{t('donate.confirm.security')}</span>
           </div>
@@ -514,6 +679,114 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="font-medium">{value}</span>
     </div>
+  )
+}
+
+/**
+ * PixGo inline result — shows the generated QR code (base64 PNG) and/or the
+ * "Copia e Cola" text. Payment confirmation happens automatically via the
+ * PixGo webhook; the donor just needs to scan and pay.
+ */
+function PixGoPaymentResult({
+  result, campaignName, t,
+}: {
+  result: PixGoResult
+  campaignName: string
+  t: (key: string, params?: Record<string, string | number>) => string
+}) {
+  const [copied, setCopied] = useState(false)
+
+  const copyCopiaCola = async () => {
+    if (!result.qrCode) return
+    try {
+      await navigator.clipboard.writeText(result.qrCode)
+      setCopied(true)
+      toast.success(`${t('iban.copy')} ✓`)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      toast.error('Erro ao copiar')
+    }
+  }
+
+  const expiresAtLabel = useMemo(() => {
+    if (!result.expiresAt) return null
+    try {
+      return new Intl.DateTimeFormat('pt-PT', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+      }).format(new Date(result.expiresAt))
+    } catch {
+      return null
+    }
+  }, [result.expiresAt])
+
+  return (
+    <Card className="border-emerald-200 dark:border-emerald-900">
+      <CardHeader className="text-center">
+        <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-950/40">
+          <QrCode className="h-8 w-8 text-emerald-600" />
+        </div>
+        <CardTitle className="text-xl">{t('pix.title')}</CardTitle>
+        <CardDescription>
+          {campaignName} — {t('pixgo.waiting')}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {/* QR Code image (base64 PNG) */}
+        {result.qrCodeImage && (
+          <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/30 p-4">
+            <img
+              src={`data:image/png;base64,${result.qrCodeImage}`}
+              alt="QR Code PIX"
+              className="h-64 w-64 rounded-lg border bg-white p-2"
+            />
+            <p className="text-center text-xs text-muted-foreground">{t('pix.instructions')}</p>
+          </div>
+        )}
+
+        {/* Copia e Cola text + copy button */}
+        {result.qrCode && (
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+              {t('pix.copiaecola')}
+            </Label>
+            <div className="flex items-stretch gap-2">
+              <Input
+                readOnly
+                value={result.qrCode}
+                className="font-mono text-xs"
+                onFocus={(e) => e.target.select()}
+              />
+              <Button variant="outline" size="sm" onClick={copyCopiaCola} className="shrink-0 gap-1.5">
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                {t('iban.copy')}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* No QR — show fallback notice */}
+        {!result.qrCodeImage && !result.qrCode && (
+          <div className="flex items-start gap-3 rounded-lg bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+            <p>{t('pix.waiting')}</p>
+          </div>
+        )}
+
+        <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          <AlertCircle className="mb-1 h-3.5 w-3.5" /> {t('pixgo.waiting')}
+        </div>
+
+        <Separator />
+
+        <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+          <p>{t('result.reference')}: <code className="font-mono text-foreground">{result.reference.slice(0, 12)}</code></p>
+          {expiresAtLabel && (
+            <p className="mt-1">Expira em: <span className="text-foreground">{expiresAtLabel}</span></p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 

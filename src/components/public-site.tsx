@@ -152,6 +152,9 @@ export function PublicSite({ initial }: { initial: PublicSite }) {
           layout={initial.hero.layout}
         />
 
+        {/* Photo carousel below the story */}
+        <PhotoGallery images={s['gallery.images'] ?? ''} />
+
         <DonateSection
           title={s['donate.title'] ?? 'Como apoiar'}
           note={s['donate.note'] ?? ''}
@@ -1061,5 +1064,54 @@ function SectionLabel({ index, label }: { index: string; label: string }) {
       <span className="h-px w-8 bg-stone-300 dark:bg-stone-700" />
       <span className="font-medium">{label}</span>
     </div>
+  )
+}
+
+/* ----------------------------------------------------------------------------
+ * Photo Gallery — horizontal scrollable carousel below the story
+ * Images are configured via SiteSetting key 'gallery.images' (comma-separated
+ * asset refs like "asset:abc,asset:def" or external URLs)
+ * ------------------------------------------------------------------------- */
+
+function PhotoGallery({ images }: { images: string }) {
+  const parsed = useMemo(() => {
+    if (!images?.trim()) return []
+    return images
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((ref) => {
+        if (ref.startsWith('asset:')) return `/api/public/asset/${ref.slice(6)}`
+        return ref
+      })
+  }, [images])
+
+  if (parsed.length === 0) return null
+
+  return (
+    <section className="border-b border-stone-200/70 bg-muted/20 dark:border-stone-800/70">
+      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+        <SectionLabel index="01.5" label="Galeria" />
+        <div
+          className="mt-6 flex gap-4 overflow-x-auto pb-4"
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          {parsed.map((src, i) => (
+            <div
+              key={i}
+              className="group relative shrink-0 overflow-hidden rounded-xl border border-stone-200 shadow-sm dark:border-stone-800"
+              style={{ width: '300px', height: '200px' }}
+            >
+              <img
+                src={src}
+                alt={`Foto ${i + 1} da campanha`}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                loading="lazy"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   )
 }
