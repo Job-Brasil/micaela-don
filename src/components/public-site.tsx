@@ -155,9 +155,6 @@ export function PublicSite({ initial }: { initial: PublicSite }) {
         <DonateSection
           title={s['donate.title'] ?? 'Como apoiar'}
           note={s['donate.note'] ?? ''}
-          payment={initial.payment}
-          paymentStatus={initial.paymentStatus}
-          pix={initial.pix}
           campaignId={initial.campaign?.id ?? 'micaela'}
           campaignName={initial.campaign?.name ?? 'A história da Micaela'}
         />
@@ -500,17 +497,11 @@ function StorySection({
 function DonateSection({
   title,
   note,
-  payment,
-  paymentStatus,
-  pix,
   campaignId,
   campaignName,
 }: {
   title: string
   note: string
-  payment: PublicSite['payment']
-  paymentStatus: PublicSite['paymentStatus']
-  pix: PublicSite['pix']
   campaignId: string
   campaignName: string
 }) {
@@ -530,26 +521,9 @@ function DonateSection({
           )}
         </div>
 
-        <Tabs defaultValue="eur" className="mt-10 w-full">
-          <TabsList className="grid h-auto w-full max-w-md grid-cols-2 rounded-xl bg-muted p-1">
-            <TabsTrigger value="eur" className="gap-1.5 rounded-lg py-2">
-              <Landmark className="h-4 w-4" /> EUR
-            </TabsTrigger>
-            <TabsTrigger value="pix" className="gap-1.5 rounded-lg py-2">
-              <QrCode className="h-4 w-4" /> PIX (BRL)
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="eur" className="mt-6">
-            <EurCard payment={payment} paymentStatus={paymentStatus} />
-          </TabsContent>
-          <TabsContent value="pix" className="mt-6">
-            <PixCard pix={pix} />
-          </TabsContent>
-        </Tabs>
-
-        <Separator className="my-12" />
-        <DonationFlow campaignId={campaignId} campaignName={campaignName} />
+        <div className="mt-10">
+          <DonationFlow campaignId={campaignId} campaignName={campaignName} />
+        </div>
       </div>
     </section>
   )
