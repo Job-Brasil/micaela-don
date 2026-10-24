@@ -26,6 +26,8 @@ model Campaign {
   seoTitle    String?  @map("seo_title")
   seoDescription String? @map("seo_description")
   canonicalUrl String? @map("canonical_url")
+  deliveryAssetRef String? @map("delivery_asset_ref")
+  deliveryDescription String? @map("delivery_description")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

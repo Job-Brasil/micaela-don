@@ -46,6 +46,8 @@ const DB_ROUTES = [
   "/api/admin/messages",
   "/api/admin/messages/[id]",
   "/api/admin/audit",
+  "/api/admin/campaigns",
+  "/api/admin/campaigns/[id]",
   "/api/admin/assets",
   "/api/admin/assets/[id]",
   "/api/admin/assets/[id]/preview",
