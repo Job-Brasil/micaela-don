@@ -152,7 +152,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
 
   const canProceedStep1 = amountMinor >= limits.minMinor && amountMinor <= limits.maxMinor
   const canProceedStep2 = name.trim().length >= 2 && /\S+@\S+\.\S+/.test(email) && (!whatsapp || /^\+?\d{8,15}$/.test(whatsapp.replace(/[\s\-()]/g, '')))
-  const canProceedStep3 = !!paymentMethod
+  const canProceedStep3 = !!paymentMethod && (paymentMethod !== 'pix_automatic' || /^\d{11}$|^\d{14}$/.test(cpf.replace(/\D/g, '')))
 
   const submit = async () => {
     setSubmitting(true)
@@ -242,7 +242,13 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           }),
         })
         const pixgoData = await pixgoRes.json()
-        if (!pixgoRes.ok) throw new Error(pixgoData?.error ?? 'Erro PixGo')
+        if (!pixgoRes.ok) {
+          // Erro do PixGo — mostrar erro claro, não simular sucesso
+          toast.error('Erro ao gerar PIX automático', {
+            description: 'Não foi possível criar a cobrança PIX. Tente o PIX Manual ou outro método.',
+          })
+          return
+        }
         setResult({
           id: pixgoData.reference ?? data.id,
           paymentMethod: 'pix_automatic',
@@ -344,8 +350,6 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
             canProceed={canProceedStep2}
             onBack={() => setStep(1)}
             onNext={() => setStep(3)}
-            paymentMethod={paymentMethod}
-            cpf={cpf} setCpf={setCpf}
           />
         )}
 
@@ -358,6 +362,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
             canProceed={canProceedStep3}
             onBack={() => setStep(2)}
             onNext={() => setStep(4)}
+            cpf={cpf} setCpf={setCpf}
           />
         )}
 
@@ -520,7 +525,7 @@ function Step1Value({
 
 function Step2Donor({
   name, setName, email, setEmail, whatsapp, setWhatsapp, country, setCountry,
-  message, setMessage, canProceed, onBack, onNext, paymentMethod, cpf, setCpf,
+  message, setMessage, canProceed, onBack, onNext,
 }: {
   name: string; setName: (s: string) => void
   email: string; setEmail: (s: string) => void
@@ -529,8 +534,6 @@ function Step2Donor({
   message: string; setMessage: (s: string) => void
   canProceed: boolean
   onBack: () => void; onNext: () => void
-  paymentMethod: string
-  cpf: string; setCpf: (s: string) => void
 }) {
   return (
     <div>
@@ -550,13 +553,6 @@ function Step2Donor({
             <Label htmlFor="d-whats">WhatsApp (opcional)</Label>
             <Input id="d-whats" type="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} maxLength={40} placeholder="+351 912 345 678" />
           </div>
-          {paymentMethod === 'pix_automatic' && (
-            <div className="grid gap-2">
-              <Label htmlFor="d-cpf">CPF/CNPJ *</Label>
-              <Input id="d-cpf" value={cpf} onChange={(e) => setCpf(e.target.value)} maxLength={18} placeholder="000.000.000-00" />
-              <p className="text-xs text-muted-foreground">Necessário para gerar o PIX automático.</p>
-            </div>
-          )}
           <div className="grid gap-2">
             <Label htmlFor="d-country">País / Região</Label>
             <Select value={country} onValueChange={setCountry}>
@@ -591,6 +587,7 @@ function Step2Donor({
 
 function Step3Method({
   currency, availableMethods, paymentMethod, setPaymentMethod, canProceed, onBack, onNext,
+  cpf, setCpf,
 }: {
   currency: string
   availableMethods: Array<{ key: string; available: boolean; currencies: string[]; [k: string]: unknown }>
@@ -598,7 +595,11 @@ function Step3Method({
   setPaymentMethod: (m: string) => void
   canProceed: boolean
   onBack: () => void; onNext: () => void
+  cpf: string; setCpf: (s: string) => void
 }) {
+  const cpfRequired = paymentMethod === 'pix_automatic'
+  const cpfValid = !cpfRequired || /^\d{11}$|^\d{14}$/.test(cpf.replace(/\D/g, ''))
+
   return (
     <div>
       <StepHeader n={3} title="Método de pagamento" desc={`Métodos disponíveis para ${currency}.`} />
@@ -647,11 +648,32 @@ function Step3Method({
         </div>
       )}
 
+      {/* CPF field — appears when PIX Automático is selected */}
+      {cpfRequired && (
+        <div className="mt-4 max-w-md rounded-xl border-2 border-amber-200 bg-amber-50/50 p-4 dark:border-amber-900 dark:bg-amber-950/20">
+          <Label htmlFor="d-cpf" className="mb-1.5 block">CPF/CNPJ *</Label>
+          <Input
+            id="d-cpf"
+            value={cpf}
+            onChange={(e) => setCpf(e.target.value)}
+            maxLength={18}
+            placeholder="000.000.000-00"
+            className={cpfValid ? '' : 'border-red-400'}
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Necessário para gerar o PIX automático. Será enviado ao fornecedor e não armazenado.
+          </p>
+          {!cpfValid && cpf && (
+            <p className="mt-1 text-xs text-red-600">CPF deve ter 11 ou 14 dígitos.</p>
+          )}
+        </div>
+      )}
+
       <div className="mt-6 flex justify-between">
         <Button variant="ghost" onClick={onBack} className="gap-1">
           <ChevronLeft className="h-4 w-4" /> Voltar
         </Button>
-        <Button onClick={onNext} disabled={!canProceed} className="gap-1">
+        <Button onClick={onNext} disabled={!canProceed || (cpfRequired && !cpfValid)} className="gap-1">
           Continuar <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
