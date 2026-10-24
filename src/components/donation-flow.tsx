@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { loadStripe } from '@stripe/stripe-js'
 import { toast } from 'sonner'
 import {
   Heart,
@@ -195,7 +194,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
         })
         const stripeData = await stripeRes.json()
         if (stripeData.clientSecret) {
-          // Load Stripe and mount embedded checkout
+          // Load Stripe.js dynamically and mount embedded checkout
           setStripeLoading(true)
           try {
             const stripePk = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
@@ -204,15 +203,14 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
               setStripeLoading(false)
               return
             }
-            const stripe = await loadStripe(stripePk)
+            // Load Stripe.js via dynamic script injection (official approach)
+            const stripe = await loadStripeScript(stripePk)
             if (!stripe) {
               toast.error('Não foi possível carregar o Stripe.')
               setStripeLoading(false)
               return
             }
-            // initEmbeddedCheckout is available on the Stripe object in recent versions
-            const stripeAny = stripe as unknown as { initEmbeddedCheckout: (opts: { clientSecret: string }) => Promise<{ mount: (sel: string) => void; destroy: () => void }> }
-            const checkout = await stripeAny.initEmbeddedCheckout({
+            const checkout = await stripe.initEmbeddedCheckout({
               clientSecret: stripeData.clientSecret,
             })
             checkout.mount('#stripe-checkout-container')
@@ -912,4 +910,42 @@ function PixGoPaymentResult({ result, campaignName }: { result: { id: string; pa
       </CardContent>
     </Card>
   )
+}
+
+/**
+ * Loads Stripe.js dynamically via script tag (official approach, no npm dependency).
+ * Returns the Stripe object or null on failure.
+ */
+type StripeInstance = {
+  initEmbeddedCheckout: (opts: { clientSecret: string }) => Promise<{
+    mount: (selector: string) => void
+    destroy: () => void
+  }>
+}
+
+function loadStripeScript(publishableKey: string): Promise<StripeInstance | null> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve(null)
+      return
+    }
+    const w = window as unknown as { Stripe?: (pk: string) => unknown }
+    // If already loaded, return existing instance
+    if (w.Stripe) {
+      resolve(w.Stripe(publishableKey) as unknown as StripeInstance)
+      return
+    }
+    const script = document.createElement('script')
+    script.src = 'https://js.stripe.com/v3/'
+    script.async = true
+    script.onload = () => {
+      if (w.Stripe) {
+        resolve(w.Stripe(publishableKey) as unknown as StripeInstance)
+      } else {
+        resolve(null)
+      }
+    }
+    script.onerror = () => resolve(null)
+    document.head.appendChild(script)
+  })
 }
