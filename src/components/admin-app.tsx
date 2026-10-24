@@ -25,6 +25,7 @@ import {
   ImageIcon,
   ExternalLink,
   Save,
+  Megaphone,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -46,7 +47,7 @@ import {
 } from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/admin-client'
 
-type Tab = 'site' | 'payment' | 'pix' | 'materials' | 'donations' | 'templates' | 'channels' | 'audit'
+type Tab = 'site' | 'campaigns' | 'payment' | 'pix' | 'materials' | 'donations' | 'templates' | 'channels' | 'audit'
 
 export function AdminApp({ onClose }: { onClose: () => void }) {
   const [authed, setAuthed] = useState<boolean | null>(null)
@@ -100,8 +101,9 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
         ) : (
           <div className="mx-auto max-w-5xl p-4 sm:p-6">
             <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="w-full">
-              <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-8">
+              <TabsList className="grid w-full grid-cols-3 sm:grid-cols-5 lg:grid-cols-9">
                 <TabsTrigger value="site" className="gap-1"><LayoutDashboard className="h-3.5 w-3.5" /> Site</TabsTrigger>
+                <TabsTrigger value="campaigns" className="gap-1"><Megaphone className="h-3.5 w-3.5" /> Campanhas</TabsTrigger>
                 <TabsTrigger value="payment" className="gap-1"><Landmark className="h-3.5 w-3.5" /> EUR</TabsTrigger>
                 <TabsTrigger value="pix" className="gap-1"><QrCode className="h-3.5 w-3.5" /> PIX</TabsTrigger>
                 <TabsTrigger value="materials" className="gap-1"><FolderKanban className="h-3.5 w-3.5" /> Materiais</TabsTrigger>
@@ -112,6 +114,7 @@ export function AdminApp({ onClose }: { onClose: () => void }) {
               </TabsList>
 
               <TabsContent value="site" className="mt-6"><SiteTab /></TabsContent>
+              <TabsContent value="campaigns" className="mt-6"><CampaignsTab /></TabsContent>
               <TabsContent value="payment" className="mt-6"><PaymentTab /></TabsContent>
               <TabsContent value="pix" className="mt-6"><PixTab /></TabsContent>
               <TabsContent value="materials" className="mt-6"><MaterialsTab /></TabsContent>
@@ -1331,5 +1334,217 @@ function AuditTab() {
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// ---------- Campaigns tab ----------
+type CampaignItem = {
+  id: string
+  slug: string
+  name: string
+  status: string
+  isDefault: boolean
+  currency: string
+  country: string
+  deliveryAssetRef: string | null
+  deliveryDescription: string | null
+  createdAt: string
+}
+
+function CampaignsTab() {
+  const { data, loading, reload } = useAdmin<{ campaigns: CampaignItem[] }>('/api/admin/campaigns')
+  const [showCreate, setShowCreate] = useState(false)
+  const [editing, setEditing] = useState<CampaignItem | null>(null)
+  const list = data?.campaigns ?? []
+
+  if (loading) return <LoadingRow />
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Campanhas</h3>
+          <p className="text-sm text-muted-foreground">Gerir campanhas, slugs e conteúdo digital.</p>
+        </div>
+        <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1">
+          <Megaphone className="h-4 w-4" /> Nova campanha
+        </Button>
+      </div>
+
+      <div className="grid gap-3">
+        {list.length === 0 ? (
+          <div className="p-8 text-center text-sm text-muted-foreground">Sem campanhas.</div>
+        ) : (
+          list.map((c) => (
+            <Card key={c.id} className={c.status === 'archived' ? 'opacity-60' : ''}>
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold">{c.name}</span>
+                    {c.isDefault && <Badge variant="default">Predefinida</Badge>}
+                    <Badge variant={c.status === 'published' ? 'secondary' : 'outline'}>{c.status}</Badge>
+                  </div>
+                  <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                    <span>/​{c.slug}</span>
+                    <span>{c.currency}</span>
+                    <span>{c.country}</span>
+                    {c.deliveryAssetRef && <Badge variant="secondary" className="text-[10px]">Pack Media</Badge>}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setEditing(c)} className="gap-1">
+                    <Pencil className="h-3.5 w-3.5" /> Editar
+                  </Button>
+                  {c.status !== 'archived' && !c.isDefault && (
+                    <Button size="sm" variant="ghost" onClick={() => archiveCampaign(c.id, reload)} className="text-muted-foreground">
+                      Arquivar
+                    </Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
+      </div>
+
+      {showCreate && <CampaignEditDialog campaign={null} onClose={() => setShowCreate(false)} onSaved={reload} />}
+      {editing && <CampaignEditDialog campaign={editing} onClose={() => setEditing(null)} onSaved={reload} />}
+    </div>
+  )
+}
+
+async function archiveCampaign(id: string, reload: () => void) {
+  if (!confirm('Arquivar esta campanha? Não elimina dados.')) return
+  try {
+    await apiFetch(`/api/admin/campaigns/${id}`, { method: 'DELETE' })
+    toast.success('Campanha arquivada')
+    reload()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : 'Erro')
+  }
+}
+
+function CampaignEditDialog({ campaign, onClose, onSaved }: { campaign: CampaignItem | null; onClose: () => void; onSaved: () => void }) {
+  const isNew = !campaign
+  const [slug, setSlug] = useState(campaign?.slug ?? '')
+  const [name, setName] = useState(campaign?.name ?? '')
+  const [status, setStatus] = useState(campaign?.status ?? 'draft')
+  const [currency, setCurrency] = useState(campaign?.currency ?? 'EUR')
+  const [country, setCountry] = useState(campaign?.country ?? 'PT')
+  const [deliveryAssetRef, setDeliveryAssetRef] = useState(campaign?.deliveryAssetRef ?? '')
+  const [deliveryDescription, setDeliveryDescription] = useState(campaign?.deliveryDescription ?? '')
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const body = {
+        slug: slug.trim().toLowerCase().replace(/\s+/g, '-'),
+        name: name.trim(),
+        status,
+        currency,
+        country,
+        deliveryAssetRef: deliveryAssetRef.trim() || null,
+        deliveryDescription: deliveryDescription.trim() || null,
+      }
+      if (isNew) {
+        await apiFetch('/api/admin/campaigns', { method: 'POST', body: JSON.stringify(body) })
+        toast.success('Campanha criada')
+      } else {
+        await apiFetch(`/api/admin/campaigns/${campaign!.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+        toast.success('Campanha atualizada')
+      }
+      onSaved()
+      onClose()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erro ao guardar')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={() => onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{isNew ? 'Nova campanha' : `Editar — ${campaign!.name}`}</DialogTitle>
+          <DialogDescription>
+            {isNew ? 'Criar nova campanha.' : 'Editar campanha existente.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <div className="grid gap-2">
+            <Label>Nome *</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome da campanha" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-2">
+              <Label>Slug * (URL)</Label>
+              <Input
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                placeholder="diana"
+                disabled={!isNew && campaign?.isDefault}
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">Será acessível em /{slug || 'slug'}</p>
+            </div>
+            <div className="grid gap-2">
+              <Label>Estado</Label>
+              <Select value={status} onValueChange={setStatus}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="draft">Rascunho</SelectItem>
+                  <SelectItem value="published">Publicada</SelectItem>
+                  <SelectItem value="paused">Pausada</SelectItem>
+                  <SelectItem value="archived">Arquivada</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-2">
+              <Label>Moeda</Label>
+              <Select value={currency} onValueChange={setCurrency}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="EUR">EUR</SelectItem>
+                  <SelectItem value="BRL">BRL</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label>País</Label>
+              <Input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().slice(0, 2))} maxLength={2} />
+            </div>
+          </div>
+          <Separator />
+          <div className="grid gap-2">
+            <Label>Pack Media — referência do conteúdo</Label>
+            <Input
+              value={deliveryAssetRef}
+              onChange={(e) => setDeliveryAssetRef(e.target.value)}
+              placeholder="asset:id (deixe vazio se não houver Pack Media)"
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground">Ex: asset:abc123 — referencia uma imagem enviada no painel. Deixe vazio se a campanha não tem Pack Media.</p>
+          </div>
+          <div className="grid gap-2">
+            <Label>Pack Media — descrição</Label>
+            <Input
+              value={deliveryDescription}
+              onChange={(e) => setDeliveryDescription(e.target.value)}
+              placeholder="Descrição curta do conteúdo digital"
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button onClick={save} disabled={saving || !name.trim() || !slug.trim()}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Guardar'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
