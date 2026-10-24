@@ -24,7 +24,6 @@ console.log(`[postinstall] generating Prisma client from ${schema}`)
 try {
   execSync(`prisma generate --schema ${schema}`, { stdio: 'inherit' })
 } catch (e) {
-  // Don't fail the whole install on a generate error in CI; surface the message.
-  console.error('[postinstall] prisma generate failed:', e instanceof Error ? e.message : e)
-  process.exitCode = 1
+  // Don't fail the build on prisma generate error — the build script also runs generate
+  console.error('[postinstall] prisma generate failed (non-fatal):', e instanceof Error ? e.message : e)
 }
