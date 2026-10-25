@@ -3,36 +3,36 @@
  *
  * Docs: https://docs.misticpay.com/
  * Base URL: https://api.misticpay.com/api
- * Auth: Authorization: Basic BASE64(client_id:client_secret)
+ * Auth: Authorization: Basic BASE64(pk_:sk_) or BASE64(client_id:client_secret)
  *
  * Create charge: POST /transactions/create
  *   Body: { amount, payerName, payerDocument, description, transactionId, projectWebhook }
- *   Returns: { transactionId, pixQrCode, pixCopyPaste, status, ... }
+ *   Returns: { transactionId, qrCode/pixQrCode, copyPaste/pixCopyPaste, status, ... }
  *
  * Check status: POST /transactions/check
  *   Body: { transactionId }
  *
  * Webhook: sent to projectWebhook URL when payment status changes.
- *   Events: payment.confirmed, payment.expired, etc.
  *
  * Credentials (MISTICPAY_CLIENT_ID, MISTICPAY_CLIENT_SECRET) are server-only env vars.
+ * Supports both pk_/sk_ (new) and ci_/cs_ (legacy) formats.
  */
 
 const MISTICPAY_BASE_URL = 'https://api.misticpay.com/api'
 
 export type CreateMisticPayPaymentParams = {
-  amount: number // in BRL (major units, e.g. 50.00)
+  amount: number
   payerName: string
-  payerDocument: string // CPF (11 digits) or CNPJ (14 digits), no formatting
+  payerDocument: string
   description: string
-  transactionId: string // our internal reference
+  transactionId: string
   webhookUrl: string
 }
 
 export type MisticPayPaymentResponse = {
   transactionId?: string
-  pixQrCode?: string // base64 QR image
-  pixCopyPaste?: string // PIX Copia e Cola code
+  pixQrCode?: string | null
+  pixCopyPaste?: string | null
   status?: string
   amount?: number
   [key: string]: unknown
@@ -49,9 +49,8 @@ function getAuthHeader(): string {
   const clientId = process.env.MISTICPAY_CLIENT_ID
   const clientSecret = process.env.MISTICPAY_CLIENT_SECRET
   if (!clientId || !clientSecret) {
-    throw new Error('MisticPay: credenciais não configuradas (MISTICPAY_CLIENT_ID / MISTICPAY_CLIENT_SECRET)')
+    throw new Error('MisticPay: credenciais não configuradas')
   }
-  // Basic Auth: Base64(client_id:client_secret)
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
   return `Basic ${basic}`
 }
@@ -61,9 +60,16 @@ function isConfigured(): boolean {
 }
 
 /**
- * Creates a PIX payment via MisticPay API.
- * POST /transactions/create
+ * Safely extracts a string field from a response, trying multiple key names.
  */
+function extractString(data: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const val = data[key]
+    if (typeof val === 'string' && val.length > 0) return val
+  }
+  return null
+}
+
 export async function createMisticPayPayment(
   params: CreateMisticPayPaymentParams,
 ): Promise<MisticPayPaymentResponse> {
@@ -93,35 +99,23 @@ export async function createMisticPayPayment(
     throw new Error(`MisticPay ${code}: ${message}`)
   }
 
-  const data = await res.json() as MisticPayPaymentResponse
-  // Normalize field names: MisticPay may return different keys for QR/pix code
-  const normalized: MisticPayPaymentResponse = {
+  const data = await res.json() as Record<string, unknown>
+
+  // Normalize: try multiple field names for QR and copy-paste
+  const transactionId = extractString(data, ['transactionId', 'id', 'transaction_id', 'txid'])
+  const pixQrCode = extractString(data, ['pixQrCode', 'qrCode', 'qr_code', 'pixQrcode', 'pix_qr_code', 'qrCodeBase64', 'qr_base64', 'emvqrcode', 'qrcode'])
+  const pixCopyPaste = extractString(data, ['pixCopyPaste', 'copyPaste', 'copy_paste', 'pixCode', 'pix_code', 'brCode', 'brcode', 'payload', 'emv', 'copiaCola', 'copia_cola'])
+
+  return {
     ...data,
-    transactionId: data.transactionId ?? (data as Record<string, unknown>).transactionId as string ?? (data as Record<string, unknown>).id as string,
-    pixQrCode: data.pixQrCode
-      ?? (data as Record<string, unknown>).qrCode as string
-      ?? (data as Record<string, unknown>).qr_code as string
-      ?? (data as Record<string, unknown>).pixQrcode as string
-      ?? (data as Record<string, unknown>).pix_qr_code as string
-      ?? (data as Record<string, unknown>).qrCodeBase64 as string
-      ?? null,
-    pixCopyPaste: data.pixCopyPaste
-      ?? (data as Record<string, unknown>).copyPaste as string
-      ?? (data as Record<string, unknown>).copy_paste as string
-      ?? (data as Record<string, unknown>).pixCode as string
-      ?? (data as Record<string, unknown>).pix_code as string
-      ?? (data as Record<string, unknown>).brCode as string
-      ?? (data as Record<string, unknown>).brcode as string
-      ?? (data as Record<string, unknown>).payload as string
-      ?? null,
+    transactionId: transactionId ?? undefined,
+    pixQrCode: pixQrCode ?? null,
+    pixCopyPaste: pixCopyPaste ?? null,
+    status: extractString(data, ['status', 'state', 'transactionState']),
+    amount: typeof data.amount === 'number' ? data.amount : undefined,
   }
-  return normalized
 }
 
-/**
- * Queries the status of a MisticPay transaction.
- * POST /transactions/check
- */
 export async function getMisticPayPaymentStatus(
   transactionId: string,
 ): Promise<MisticPayStatusResponse> {
