@@ -109,9 +109,9 @@ export async function createMisticPayPayment(
   return {
     ...data,
     transactionId: transactionId ?? undefined,
-    pixQrCode: pixQrCode ?? null,
-    pixCopyPaste: pixCopyPaste ?? null,
-    status: extractString(data, ['status', 'state', 'transactionState']),
+    pixQrCode: pixQrCode,
+    pixCopyPaste: pixCopyPaste,
+    status: extractString(data, ['status', 'state', 'transactionState']) ?? undefined,
     amount: typeof data.amount === 'number' ? data.amount : undefined,
   }
 }
