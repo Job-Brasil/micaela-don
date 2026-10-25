@@ -94,6 +94,8 @@ export async function createMisticPayPayment(
   }
 
   const data = await res.json() as MisticPayPaymentResponse
+  // Debug: log the response keys to identify field names (sanitized — no values)
+  console.log('[misticpay] response keys:', Object.keys(data))
   return data
 }
 
