@@ -99,20 +99,25 @@ export async function createMisticPayPayment(
     throw new Error(`MisticPay ${code}: ${message}`)
   }
 
-  const data = await res.json() as Record<string, unknown>
+  const raw = await res.json() as Record<string, unknown>
 
-  // Normalize: try multiple field names for QR and copy-paste
+  // MisticPay returns { message, data: { transactionId, qrCodeBase64, copyPaste, ... } }
+  // The actual payment data is inside the "data" property
+  const data = (raw.data && typeof raw.data === 'object' ? raw.data : raw) as Record<string, unknown>
+
+  // Extract fields with the exact names MisticPay uses
   const transactionId = extractString(data, ['transactionId', 'id', 'transaction_id', 'txid'])
-  const pixQrCode = extractString(data, ['pixQrCode', 'qrCode', 'qr_code', 'pixQrcode', 'pix_qr_code', 'qrCodeBase64', 'qr_base64', 'emvqrcode', 'qrcode'])
-  const pixCopyPaste = extractString(data, ['pixCopyPaste', 'copyPaste', 'copy_paste', 'pixCode', 'pix_code', 'brCode', 'brcode', 'payload', 'emv', 'copiaCola', 'copia_cola'])
+  const pixQrCode = extractString(data, ['qrCodeBase64', 'pixQrCode', 'qrCode', 'qr_code', 'qrcode'])
+  const pixCopyPaste = extractString(data, ['copyPaste', 'pixCopyPaste', 'copy_paste', 'pixCode', 'brCode', 'payload'])
+  const status = extractString(data, ['transactionState', 'status', 'state'])
 
   return {
     ...data,
     transactionId: transactionId ?? undefined,
     pixQrCode: pixQrCode,
     pixCopyPaste: pixCopyPaste,
-    status: extractString(data, ['status', 'state', 'transactionState']) ?? undefined,
-    amount: typeof data.amount === 'number' ? data.amount : undefined,
+    status: status ?? undefined,
+    amount: typeof data.transactionAmount === 'number' ? data.transactionAmount : (typeof data.amount === 'number' ? data.amount : undefined),
   }
 }
 
