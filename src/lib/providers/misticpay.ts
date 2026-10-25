@@ -94,9 +94,28 @@ export async function createMisticPayPayment(
   }
 
   const data = await res.json() as MisticPayPaymentResponse
-  // Debug: log the response keys to identify field names (sanitized — no values)
-  console.log('[misticpay] response keys:', Object.keys(data))
-  return data
+  // Normalize field names: MisticPay may return different keys for QR/pix code
+  const normalized: MisticPayPaymentResponse = {
+    ...data,
+    transactionId: data.transactionId ?? (data as Record<string, unknown>).transactionId as string ?? (data as Record<string, unknown>).id as string,
+    pixQrCode: data.pixQrCode
+      ?? (data as Record<string, unknown>).qrCode as string
+      ?? (data as Record<string, unknown>).qr_code as string
+      ?? (data as Record<string, unknown>).pixQrcode as string
+      ?? (data as Record<string, unknown>).pix_qr_code as string
+      ?? (data as Record<string, unknown>).qrCodeBase64 as string
+      ?? null,
+    pixCopyPaste: data.pixCopyPaste
+      ?? (data as Record<string, unknown>).copyPaste as string
+      ?? (data as Record<string, unknown>).copy_paste as string
+      ?? (data as Record<string, unknown>).pixCode as string
+      ?? (data as Record<string, unknown>).pix_code as string
+      ?? (data as Record<string, unknown>).brCode as string
+      ?? (data as Record<string, unknown>).brcode as string
+      ?? (data as Record<string, unknown>).payload as string
+      ?? null,
+  }
+  return normalized
 }
 
 /**
