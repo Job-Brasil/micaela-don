@@ -5,6 +5,8 @@ import { json, badRequest } from '@/lib/api'
 import { clientIp } from '@/lib/auth'
 import { audit } from '@/lib/audit'
 import { createCheckoutSession } from '@/lib/providers/stripe'
+import { getCanonicalAppBaseUrl } from '@/lib/payments/urls'
+import { resolveDonationIntentId } from '@/lib/payments/intent'
 import {
   generateInternalReference,
   validateAmount,
@@ -13,6 +15,7 @@ import {
 const schema = z.object({
   campaignId: z.string().trim().max(60).default('micaela'),
   amount: z.number().positive(),
+  donationIntentId: z.string().trim().min(8).max(128).optional(),
   currency: z.enum(['EUR']).default('EUR'), // MB WAY is EUR only
   customerEmail: z.string().trim().email().max(160),
   customerName: z.string().trim().max(120).optional(),
@@ -42,6 +45,7 @@ export async function POST(req: NextRequest) {
     return badRequest(parsed.error.issues[0]?.message ?? 'Dados inválidos.')
   }
   const d = parsed.data
+  if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET || !process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY) return badRequest('Pagamento em euros indisponível.')
   const ip = clientIp(req)
 
   // 1) Validate campaign
@@ -58,11 +62,22 @@ export async function POST(req: NextRequest) {
     return badRequest(e instanceof Error ? e.message : 'Valor inválido.')
   }
 
+  let donationIntentId: string | null
+  try {
+    donationIntentId = await resolveDonationIntentId(d.donationIntentId, {
+      campaignId: campaign.id, currency: d.currency, amount: amountStr,
+      paymentMethod: 'mbway', customerEmail: d.customerEmail,
+    })
+  } catch (e) {
+    return badRequest(e instanceof Error ? e.message : 'Intenção inválida.')
+  }
+
   // 3) Create internal PaymentOrder
   const internalReference = generateInternalReference()
   const order = await db.paymentOrder.create({
     data: {
       campaignId: campaign.id,
+      donationIntentId,
       provider: 'stripe',
       method: 'mbway',
       internalReference,
@@ -86,14 +101,15 @@ export async function POST(req: NextRequest) {
 
   // 4) Create Stripe Checkout Session (embedded mode)
   try {
-    const origin = req.headers.get('origin') ?? 'https://ajudar.charity'
+    // Canonical server-configured origin, not the request's Origin header.
+    const baseUrl = getCanonicalAppBaseUrl()
     const { sessionId, clientSecret } = await createCheckoutSession({
       internalReference,
       amount: d.amount,
       currency: d.currency,
       campaignName: campaign.name,
       customerEmail: d.customerEmail,
-      returnUrl: `${origin}/pagamento/sucesso?ref=${internalReference}`,
+      returnUrl: `${baseUrl}/pagamento/sucesso?ref=${encodeURIComponent(internalReference)}`,
       metadata: {
         campaign_id: campaign.id,
         order_id: order.id,
