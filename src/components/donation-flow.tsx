@@ -228,7 +228,16 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
 
       // If PixGo PIX automatic, create charge and show QR inline
       if (paymentMethod === 'pix_automatic') {
-        const pixgoRes = await fetch('/api/payments/pixgo/create', {
+        // Determine provider: MisticPay (preferred) or PixGo (fallback)
+        const pixgoRes = await fetch('/api/public/payment-methods?campaignId=' + encodeURIComponent(campaignId))
+        const pixgoMethods = await pixgoRes.json()
+        const pixProvider = pixgoMethods?.methods?.pix_automatic?.provider ?? 'misticpay'
+
+        const createUrl = pixProvider === 'misticpay'
+          ? '/api/payments/misticpay/create'
+          : '/api/payments/pixgo/create'
+
+        const pixgoRes2 = await fetch(createUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -241,9 +250,8 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
             description: `Apoio — ${campaignName}`,
           }),
         })
-        const pixgoData = await pixgoRes.json()
-        if (!pixgoRes.ok) {
-          // Erro do PixGo — mostrar erro claro, não simular sucesso
+        const pixgoData = await pixgoRes2.json()
+        if (!pixgoRes2.ok) {
           toast.error('Erro ao gerar PIX automático', {
             description: 'Não foi possível criar a cobrança PIX. Tente o PIX Manual ou outro método.',
           })

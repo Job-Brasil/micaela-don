@@ -14,6 +14,7 @@ export async function GET(req: NextRequest) {
 
   const stripeConfigured = !!process.env.STRIPE_SECRET_KEY
   const pixgoConfigured = !!process.env.PIXGO_API_KEY
+  const misticpayConfigured = !!(process.env.MISTICPAY_CLIENT_ID && process.env.MISTICPAY_CLIENT_SECRET)
 
   let pixManualAvailable = false
   let bankTransferAvailable = false
@@ -66,9 +67,10 @@ export async function GET(req: NextRequest) {
         reason: stripeConfigured ? null : 'Stripe não configurado',
       },
       pix_automatic: {
-        available: pixgoConfigured,
+        available: misticpayConfigured || pixgoConfigured,
         currencies: ['BRL'],
-        reason: pixgoConfigured ? null : 'PixGo não configurado',
+        reason: (misticpayConfigured || pixgoConfigured) ? null : 'PIX automático não configurado',
+        provider: misticpayConfigured ? 'misticpay' : (pixgoConfigured ? 'pixgo' : null),
       },
       pix_manual: {
         available: pixManualAvailable,
