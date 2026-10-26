@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { toast } from 'sonner'
 import {
   Heart,
@@ -28,6 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox'
 
 type PaymentMethodsResponse = {
+  packMedia?: { available: boolean; included?: string[] }
   methods: {
     mbway: { available: boolean; currencies: string[]; reason?: string | null }
     pix_automatic: { available: boolean; currencies: string[]; reason?: string | null }
@@ -59,7 +60,7 @@ const COUNTRY_LABELS: Record<string, string> = {
 }
 
 const METHOD_LABELS: Record<string, { label: string; icon: typeof Landmark; desc: string }> = {
-  mbway: { label: 'MB WAY', icon: CreditCard, desc: 'Pagamento instantâneo via Stripe' },
+  mbway: { label: 'Pagamento EUR', icon: CreditCard, desc: 'Métodos seguros disponíveis na Stripe, incluindo MB WAY quando elegível' },
   pix_automatic: { label: 'PIX Automático', icon: QrCode, desc: 'QR Code gerado automaticamente' },
   pix_manual: { label: 'PIX Manual', icon: QrCode, desc: 'QR Code e código Copia e Cola' },
   bank_transfer: { label: 'Transferência Bancária', icon: Landmark, desc: 'IBAN (SEPA)' },
@@ -83,10 +84,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
   const [wantPackMedia, setWantPackMedia] = useState(false)
   const [message, setMessage] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [result, setResult] = useState<{ id: string; paymentMethod: string; url?: string } | null>(null)
-  const [stripeClientSecret, setStripeClientSecret] = useState<string | null>(null)
-  const [stripeLoading, setStripeLoading] = useState(false)
-  const checkoutRef = useRef<{ destroy: () => void } | null>(null)
+  const [result, setResult] = useState<{ id: string; paymentMethod: string; qrCodeImage?: string; qrCode?: string } | null>(null)
 
   useEffect(() => {
     fetch(`/api/public/payment-methods?campaignId=${encodeURIComponent(campaignId)}`)
@@ -95,16 +93,6 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
       .catch(() => {})
       .finally(() => setLoadingMethods(false))
   }, [campaignId])
-
-  // Cleanup: destroy Stripe embedded checkout when component unmounts
-  useEffect(() => {
-    return () => {
-      if (checkoutRef.current) {
-        checkoutRef.current.destroy()
-        checkoutRef.current = null
-      }
-    }
-  }, [])
 
   // Auto-suggest country from Accept-Language (no geolocation)
   useEffect(() => {
@@ -148,11 +136,14 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
     setCountry(c)
     if (c === 'BR') setCurrency('BRL')
     else setCurrency('EUR')
+    setPaymentMethod('')
+    setSelectedAmount(null)
+    setCustomAmount('')
   }
 
   const canProceedStep1 = amountMinor >= limits.minMinor && amountMinor <= limits.maxMinor
   const canProceedStep2 = name.trim().length >= 2 && /\S+@\S+\.\S+/.test(email) && (!whatsapp || /^\+?\d{8,15}$/.test(whatsapp.replace(/[\s\-()]/g, '')))
-  const canProceedStep3 = !!paymentMethod && (paymentMethod !== 'pix_automatic' || /^\d{11}$|^\d{14}$/.test(cpf.replace(/\D/g, '')))
+  const canProceedStep3 = availableMethods.some((method) => method.key === paymentMethod) && (paymentMethod !== 'pix_automatic' || /^\d{11}$|^\d{14}$/.test(cpf.replace(/\D/g, '')))
 
   const submit = async () => {
     setSubmitting(true)
@@ -171,21 +162,20 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           paymentMethod,
           wantPackMedia,
           message: message.trim() || undefined,
-          consentChannels: ['email'],
+          consentChannels: [], // transaction receipts do not require marketing opt-in
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Erro')
 
-      setResult({ id: data.id, paymentMethod: data.paymentMethod })
-
-      // If Stripe MB WAY, create embedded checkout session
+      // EUR: redirect to Stripe-hosted checkout (more reliable than an iframe)
       if (paymentMethod === 'mbway') {
         const stripeRes = await fetch('/api/payments/stripe/create-session', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             campaignId,
+            donationIntentId: data.id,
             amount: amountMajor,
             currency,
             customerEmail: email.trim(),
@@ -193,37 +183,16 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           }),
         })
         const stripeData = await stripeRes.json()
-        if (stripeData.clientSecret) {
-          // Load Stripe.js dynamically and mount embedded checkout
-          setStripeLoading(true)
-          try {
-            const stripePk = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
-            if (!stripePk) {
-              toast.error('Stripe não configurado no frontend. Contacte o administrador.')
-              setStripeLoading(false)
-              return
-            }
-            // Load Stripe.js via dynamic script injection (official approach)
-            const stripe = await loadStripeScript(stripePk)
-            if (!stripe) {
-              toast.error('Não foi possível carregar o Stripe.')
-              setStripeLoading(false)
-              return
-            }
-            const checkout = await stripe.initEmbeddedCheckout({
-              clientSecret: stripeData.clientSecret,
-            })
-            checkout.mount('#stripe-checkout-container')
-            checkoutRef.current = checkout
-            setStripeClientSecret(stripeData.clientSecret)
-            setStripeLoading(false)
-          } catch (e) {
-            toast.error('Erro ao carregar o checkout do Stripe.')
-            setStripeLoading(false)
-            console.error('[stripe embedded]', e)
-          }
-          return
+        if (!stripeRes.ok || !stripeData.checkoutUrl) {
+          throw new Error(stripeData?.error ?? 'Não foi possível iniciar o checkout Stripe.')
         }
+        const checkout = new URL(stripeData.checkoutUrl)
+        if (checkout.protocol !== 'https:' ||
+          (checkout.hostname !== 'checkout.stripe.com' && !checkout.hostname.endsWith('.stripe.com'))) {
+          throw new Error('O fornecedor devolveu um endereço de pagamento inesperado.')
+        }
+        window.location.assign(checkout.toString())
+        return
       }
 
       // If PixGo PIX automatic, create charge and show QR inline
@@ -242,6 +211,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             campaignId,
+            donationIntentId: data.id,
             amount: amountMajor,
             currency: 'BRL',
             customerEmail: email.trim(),
@@ -257,14 +227,34 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           })
           return
         }
+        if (!pixgoData.qrCodeImage && !pixgoData.qrCode) throw new Error('O fornecedor não devolveu um QR Code PIX.')
         setResult({
           id: pixgoData.reference ?? data.id,
           paymentMethod: 'pix_automatic',
-          url: pixgoData.qrCodeImage ?? pixgoData.qrCode ?? undefined,
+          qrCodeImage: pixgoData.qrCodeImage ?? undefined,
+          qrCode: pixgoData.qrCode ?? undefined,
         })
         return
       }
 
+      // Create a manual PIX order so administrators can verify and confirm it.
+      if (paymentMethod === 'pix_manual') {
+        const manualResponse = await fetch('/api/payments/manual-pix/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            campaignId, donationIntentId: data.id, amount: amountMajor, currency: 'BRL',
+            customerName: name.trim(), customerEmail: email.trim(),
+            customerWhatsapp: whatsapp.trim() || undefined, message: message.trim() || undefined,
+          }),
+        })
+        const manualData = await manualResponse.json()
+        if (!manualResponse.ok) throw new Error(manualData?.error ?? 'Erro ao criar PIX manual.')
+        setResult({ id: manualData.reference ?? data.id, paymentMethod: 'pix_manual' })
+        return
+      }
+
+      setResult({ id: data.id, paymentMethod: data.paymentMethod })
       // For manual methods, show confirmation
       toast.success('Intenção registada', {
         description: 'Aguarde confirmação. Este formulário não comprova pagamento.',
@@ -284,36 +274,13 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
     )
   }
 
-  // Stripe embedded checkout — show inline iframe
-  if (stripeClientSecret) {
-    return (
-      <Card className="overflow-hidden border-stone-200/70 shadow-sm dark:border-stone-800/70">
-        <CardHeader className="border-b bg-gradient-to-r from-rose-50 to-amber-50/50 pb-4 dark:from-rose-950/20 dark:to-amber-950/10">
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <CreditCard className="h-5 w-5 text-rose-600" />
-            Pagamento MB WAY
-          </CardTitle>
-          <CardDescription>Complete o pagamento na janela abaixo. O apoio só é confirmado após validação.</CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          {stripeLoading && (
-            <div className="flex items-center justify-center p-12 text-muted-foreground">
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> A carregar o checkout seguro…
-            </div>
-          )}
-          <div id="stripe-checkout-container" className="min-h-[400px]" />
-        </CardContent>
-      </Card>
-    )
-  }
-
   // PixGo PIX automatic — show QR inline
   if (result && result.paymentMethod === 'pix_automatic') {
-    return <PixGoPaymentResult result={result} campaignName={campaignName} />
+    return <PixGoPaymentResult result={result} campaignName={campaignName} wantPackMedia={wantPackMedia} />
   }
 
   if (result && (result.paymentMethod === 'pix_manual' || result.paymentMethod === 'bank_transfer')) {
-    return <ManualPaymentResult result={result} methods={methods} paymentMethod={result.paymentMethod} campaignName={campaignName} />
+    return <ManualPaymentResult result={result} methods={methods} paymentMethod={result.paymentMethod} campaignName={campaignName} campaignId={campaignId} />
   }
 
   return (
@@ -378,7 +345,7 @@ export function DonationFlow({ campaignId, campaignName }: { campaignId: string;
           <Step4PackMedia
             wantPackMedia={wantPackMedia}
             setWantPackMedia={setWantPackMedia}
-            hasMaterials={false}
+            hasMaterials={methods?.packMedia?.available === true}
             onBack={() => setStep(3)}
             onNext={() => setStep(5)}
           />
@@ -702,8 +669,9 @@ function Step4PackMedia({
       <StepHeader n={4} title="Pack Media de agradecimento" desc="Receba os materiais digitais de agradecimento da campanha." />
       <label className="flex cursor-pointer items-start gap-3 rounded-xl border-2 p-4 transition-all hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-950/10">
         <Checkbox
-          checked={wantPackMedia}
-          onCheckedChange={(v) => setWantPackMedia(v === true)}
+          checked={wantPackMedia && hasMaterials}
+          disabled={!hasMaterials}
+          onCheckedChange={(v) => setWantPackMedia(hasMaterials && v === true)}
           className="mt-0.5"
         />
         <div className="flex-1">
@@ -717,7 +685,7 @@ function Step4PackMedia({
           </p>
           {!hasMaterials && (
             <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-              Esta campanha ainda não tem materiais digitais publicados. Se selecionar esta opção, será notificado quando estiverem disponíveis.
+              O Pack Media ainda não está disponível nesta campanha.
             </p>
           )}
           <p className="mt-2 text-xs text-muted-foreground">
@@ -797,15 +765,36 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   )
 }
 
+function usePaymentStatus(reference: string): 'pending' | 'paid' | 'failed' | 'refunded' {
+  const [state, setState] = useState<'pending' | 'paid' | 'failed' | 'refunded'>('pending')
+  useEffect(() => {
+    let active = true
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/public/payment-status?ref=' + encodeURIComponent(reference), { cache: 'no-store' })
+        if (!response.ok) return
+        const data = await response.json()
+        if (active && ['pending', 'paid', 'failed', 'refunded'].includes(data.status)) setState(data.status)
+      } catch { /* transient failures do not discard the last observed state */ }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 10000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [reference])
+  return state
+}
+
 function ManualPaymentResult({
-  result, methods, paymentMethod, campaignName,
+  result, methods, paymentMethod, campaignName, campaignId,
 }: {
   result: { id: string; paymentMethod: string }
   methods: PaymentMethodsResponse | null
   paymentMethod: string
   campaignName: string
+  campaignId: string
 }) {
   const [copied, setCopied] = useState(false)
+  const paymentStatus = usePaymentStatus(result.id)
   const bank = methods?.methods.bank_transfer
   const pix = methods?.methods.pix_manual
 
@@ -828,7 +817,7 @@ function ManualPaymentResult({
         <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-950/40">
           <Check className="h-8 w-8 text-emerald-600" />
         </div>
-        <CardTitle className="text-xl">Intenção registada</CardTitle>
+        <CardTitle className="text-xl">{paymentStatus === 'paid' ? 'Pagamento confirmado' : 'Intenção registada'}</CardTitle>
         <CardDescription>
           Recebemos a sua intenção de apoio a <strong>{campaignName}</strong>.
           A confirmação é administrativa — este registo não comprova pagamento.
@@ -840,7 +829,7 @@ function ManualPaymentResult({
             <p className="text-sm font-medium">Pagamento via PIX:</p>
             {pix.beneficiaryName && <p className="text-sm text-muted-foreground">Beneficiário: {pix.beneficiaryName}</p>}
             <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/30 p-4">
-              <img src="/api/public/pix-qr" alt="QR Code PIX" className="h-48 w-48 rounded-lg border bg-white p-2" />
+              <img src={`/api/public/pix-qr?campaignId=${encodeURIComponent(campaignId)}`} alt="QR Code PIX" className="h-48 w-48 rounded-lg border bg-white p-2" />
               <p className="text-xs text-muted-foreground">Leia o QR Code com a sua app de banco para pagar.</p>
             </div>
           </div>
@@ -880,15 +869,17 @@ function CopyRow({ label, value, mono, onCopy, copied }: { label: string; value:
   )
 }
 
-function PixGoPaymentResult({ result, campaignName }: { result: { id: string; paymentMethod: string; url?: string }; campaignName: string }) {
+function PixGoPaymentResult({ result, campaignName, wantPackMedia }: { result: { id: string; paymentMethod: string; qrCodeImage?: string; qrCode?: string }; campaignName: string; wantPackMedia: boolean }) {
   const [copied, setCopied] = useState(false)
-  const isImage = result.url?.startsWith('data:image') || result.url?.startsWith('/9j/')
-  const isText = !isImage && result.url
+  const paymentStatus = usePaymentStatus(result.id)
+  const image = result.qrCodeImage?.startsWith('/9j/')
+    ? `data:image/jpeg;base64,${result.qrCodeImage}` : result.qrCodeImage
+  const code = result.qrCode
 
   const copy = async () => {
-    if (result.url) {
+    if (code) {
       try {
-        await navigator.clipboard.writeText(result.url)
+        await navigator.clipboard.writeText(code)
         setCopied(true)
         toast.success('Código PIX copiado')
         setTimeout(() => setCopied(false), 1500)
@@ -896,6 +887,25 @@ function PixGoPaymentResult({ result, campaignName }: { result: { id: string; pa
         toast.error('Não foi possível copiar')
       }
     }
+  }
+
+  if (paymentStatus === 'paid') {
+    return (
+      <Card className="border-emerald-200 dark:border-emerald-900">
+        <CardHeader className="text-center">
+          <Check className="mx-auto h-12 w-12 text-emerald-600" />
+          <CardTitle>Pagamento PIX confirmado!</CardTitle>
+          <CardDescription>O pagamento foi validado junto do fornecedor.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-center">
+          <p className="text-sm">{wantPackMedia
+            ? 'O link do Pack Media e o agradecimento serão enviados para o e-mail indicado.'
+            : 'O agradecimento será enviado para o e-mail indicado.'}</p>
+          <p className="text-xs text-muted-foreground">Se não receber o e-mail, contacte o responsável pela campanha com a referência do pagamento.</p>
+          <p className="font-mono text-xs break-all">{result.id}</p>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
@@ -910,72 +920,35 @@ function PixGoPaymentResult({ result, campaignName }: { result: { id: string; pa
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {isImage && (
+        {image && (
           <div className="flex flex-col items-center gap-3">
             <img
-              src={result.url}
+              src={image}
               alt="QR Code PIX"
               className="h-64 w-64 rounded-lg border bg-white p-3"
             />
             <p className="text-xs text-muted-foreground">Leia o QR Code com a sua app de banco para pagar.</p>
           </div>
         )}
-        {isText && (
-          <div className="space-y-2">
-            <Label>PIX Copia e Cola</Label>
-            <div className="flex items-center gap-2">
-              <Input value={result.url} readOnly className="font-mono text-xs" />
-              <Button variant="outline" size="sm" onClick={copy} className="shrink-0">
-                {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
-              </Button>
-            </div>
+        <div className="space-y-2">
+          <Label htmlFor="pix-copia-cola">PIX Copia e Cola</Label>
+          <div className="flex items-center gap-2">
+            <Input id="pix-copia-cola" value={code ?? ''} readOnly className="font-mono text-xs"
+              placeholder="Código indisponível nesta cobrança" />
+            <Button variant="outline" size="sm" onClick={copy} disabled={!code} className="shrink-0">
+              {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+              <span className="ml-1">Copiar</span>
+            </Button>
           </div>
-        )}
+          {!code && <p className="text-xs text-amber-700">O fornecedor não disponibilizou o código Copia e Cola. Não efetue outro pagamento; contacte o suporte.</p>}
+        </div>
         <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-          <AlertCircle className="mb-1 h-3.5 w-3.5" /> O pagamento aguarda confirmação automática.
+          <AlertCircle className="mb-1 h-3.5 w-3.5" /> {paymentStatus === 'failed' ? 'O pagamento falhou. Não repita sem confirmar com o banco.' : paymentStatus === 'refunded' ? 'Pagamento reembolsado.' : 'O pagamento aguarda confirmação automática. Se já pagou, aguarde a consulta ao fornecedor.'}
         </div>
         <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
-          <p>Referência: <code className="font-mono">{result.id.slice(0, 16)}</code></p>
+          <p>Referência: <code className="break-all font-mono">{result.id}</code></p>
         </div>
       </CardContent>
     </Card>
   )
-}
-
-/**
- * Loads Stripe.js dynamically via script tag (official approach, no npm dependency).
- * Returns the Stripe object or null on failure.
- */
-type StripeInstance = {
-  initEmbeddedCheckout: (opts: { clientSecret: string }) => Promise<{
-    mount: (selector: string) => void
-    destroy: () => void
-  }>
-}
-
-function loadStripeScript(publishableKey: string): Promise<StripeInstance | null> {
-  return new Promise((resolve) => {
-    if (typeof window === 'undefined') {
-      resolve(null)
-      return
-    }
-    const w = window as unknown as { Stripe?: (pk: string) => unknown }
-    // If already loaded, return existing instance
-    if (w.Stripe) {
-      resolve(w.Stripe(publishableKey) as unknown as StripeInstance)
-      return
-    }
-    const script = document.createElement('script')
-    script.src = 'https://js.stripe.com/v3/'
-    script.async = true
-    script.onload = () => {
-      if (w.Stripe) {
-        resolve(w.Stripe(publishableKey) as unknown as StripeInstance)
-      } else {
-        resolve(null)
-      }
-    }
-    script.onerror = () => resolve(null)
-    document.head.appendChild(script)
-  })
 }
