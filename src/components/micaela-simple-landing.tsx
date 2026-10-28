@@ -149,6 +149,16 @@ export function MicaelaSimpleLanding(props: Props) {
     }
     setLoading(true)
     try {
+      // Do not create an orphan intent if the database, webhook or provider keys
+      // are not ready. This endpoint never creates charges.
+      const readinessResponse = await fetch('/api/public/checkout-readiness', { cache: 'no-store' })
+      if (!readinessResponse.ok) throw new Error('Não foi possível verificar o pagamento. Contacte a equipa.')
+      const readiness = await readinessResponse.json() as {
+        pix: { ready: boolean; reason: string | null }
+        stripe: { ready: boolean; reason: string | null }
+      }
+      const current = currency === 'BRL' ? readiness.pix : readiness.stripe
+      if (!current?.ready) throw new Error(current?.reason || 'Este meio de pagamento está temporariamente indisponível.')
       const method = currency === 'BRL' ? 'pix_automatic' : 'mbway'
       const intentResponse = await fetch('/api/public/donation-intent', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -176,7 +186,18 @@ export function MicaelaSimpleLanding(props: Props) {
         if (!payment.reference || (!payment.qrCodeImage && !payment.qrCode)) throw new Error('O fornecedor não disponibilizou o PIX. Contacte-nos antes de tentar novamente.')
         setPix({ reference: payment.reference, qrCodeImage: payment.qrCodeImage, qrCode: payment.qrCode })
       } else {
-        if (!payment.reference || !payment.clientSecret || !payment.publishableKey) throw new Error('Checkout Stripe não configurado. Verifique a chave publicável no Vercel.')
+        if (!payment.reference) throw new Error('Não foi possível registar a sessão Stripe.')
+        if (payment.mode === 'hosted' && payment.checkoutUrl) {
+          const url = new URL(payment.checkoutUrl)
+          if (url.protocol !== 'https:' || (url.hostname !== 'checkout.stripe.com' && !url.hostname.endsWith('.stripe.com'))) {
+            throw new Error('A Stripe devolveu um endereço não reconhecido. Não efetue o pagamento.')
+          }
+          window.location.assign(url.toString())
+          return
+        }
+        if (!payment.clientSecret || !payment.publishableKey) {
+          throw new Error('Stripe não devolveu credenciais suficientes para apresentar o checkout.')
+        }
         setStripe({ reference: payment.reference, clientSecret: payment.clientSecret, publishableKey: payment.publishableKey })
       }
       setStatus('pending')
