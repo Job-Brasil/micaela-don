@@ -132,6 +132,20 @@ async function processStripeEvent(event: { type: string; data: { object: Record<
     }
   }
 
+  // Stripe may collect an email inside Embedded Checkout even when the campaign
+  // form left it blank. Save it only on an authenticated, matching session event.
+  if (sessionEvent && !order.customerEmail) {
+    const customerDetails = obj.customer_details && typeof obj.customer_details === 'object'
+      ? obj.customer_details as Record<string, unknown> : {}
+    const verifiedEmail = typeof customerDetails.email === 'string' ? customerDetails.email.trim() : ''
+    if (verifiedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(verifiedEmail)) {
+      await db.paymentOrder.update({
+        where: { id: order.id },
+        data: { customerEmail: verifiedEmail },
+      })
+    }
+  }
+
   switch (event.type) {
     case 'checkout.session.async_payment_succeeded':
     case 'checkout.session.completed': {
