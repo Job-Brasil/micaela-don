@@ -33,7 +33,7 @@ function PhotoCarousel({ items, label }: { items: string[]; label: string }) {
       </div>
     </div>
     <div ref={container} className="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-3 [scrollbar-width:thin]">
-      {slides.map((url, index) => <div key={index} className="relative aspect-[4/5] w-[70vw] max-w-[285px] shrink-0 snap-start overflow-hidden rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-100 via-orange-50 to-stone-200 sm:aspect-[3/4]">
+      {slides.map((url, index) => <div key={index} className="relative aspect-[9/16] w-[63vw] max-w-[270px] shrink-0 snap-start overflow-hidden rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-100 via-orange-50 to-stone-200">
         {url ? <img src={url} alt={'Fotografia da campanha ' + (index + 1)} loading="lazy" className="h-full w-full object-cover" /> :
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-rose-700/70">
             <Images size={38} strokeWidth={1.4}/><span className="text-xs font-semibold uppercase tracking-[.15em]">Fotografia {index + 1}</span>
